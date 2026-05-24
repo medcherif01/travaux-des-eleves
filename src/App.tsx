@@ -182,6 +182,113 @@ function makeBatchStudent(profile: StudentProfile, level: CriteriaLevel): BatchS
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ANSWER ENGINE UTILITIES
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Strip markdown fences, isolate outermost JSON object, parse safely.
+ * Never throws — returns {} on any failure.
+ */
+function safeParseGeminiResponse(raw: string): Record<string, unknown> {
+  if (!raw || typeof raw !== "string") return {};
+
+  let cleaned = raw.trim();
+  // Remove ```json ... ``` or ``` ... ``` fences
+  cleaned = cleaned.replace(/^```(?:json)?\s*/im, "").replace(/\s*```\s*$/im, "");
+  // Find outermost JSON object
+  const jsonStart = cleaned.indexOf("{");
+  const jsonEnd   = cleaned.lastIndexOf("}");
+  if (jsonStart !== -1 && jsonEnd > jsonStart) {
+    cleaned = cleaned.slice(jsonStart, jsonEnd + 1);
+  }
+
+  console.log("[Gemini CLEAN]", cleaned.substring(0, 300));
+
+  try {
+    return JSON.parse(cleaned) as Record<string, unknown>;
+  } catch (e) {
+    console.error("[Gemini PARSE ERROR]", (e as Error).message, cleaned.substring(0, 200));
+    return {};
+  }
+}
+
+/**
+ * Flatten an unknown value into a plain string.
+ * Accepts strings, nested objects with .answer/.text/.response, arrays joined by space.
+ */
+function flattenValue(v: unknown): string {
+  if (typeof v === "string") return v;
+  if (v === null || v === undefined) return "";
+  if (typeof v === "object") {
+    const obj = v as Record<string, unknown>;
+    if (typeof obj.answer   === "string") return obj.answer;
+    if (typeof obj.text     === "string") return obj.text;
+    if (typeof obj.response === "string") return obj.response;
+    if (typeof obj.content  === "string") return obj.content;
+    if (Array.isArray(obj)) return (obj as unknown[]).map(flattenValue).filter(Boolean).join(" ");
+    return Object.values(obj).map(flattenValue).filter(Boolean).join(" ");
+  }
+  return String(v);
+}
+
+/**
+ * 4-tier ID matching: exact → case-insensitive → normalise symbols → numeric suffix → positional.
+ * Each raw key can be claimed by at most one question (usedKeys set).
+ */
+function normalizeGeminiAnswers(
+  rawAnswers: Record<string, unknown>,
+  questions: DetectedQuestion[]
+): Record<string, string> {
+  console.log("[normalizeGeminiAnswers] raw keys:", Object.keys(rawAnswers));
+  console.log("[normalizeGeminiAnswers] question ids:", questions.map(q => q.id));
+
+  // Flatten all values to strings
+  const raw: Record<string, string> = Object.fromEntries(
+    Object.entries(rawAnswers).map(([k, v]) => [k, flattenValue(v)])
+  );
+
+  const normKey = (s: string) => s.toLowerCase().replace(/[\s_\-\.]/g, "");
+  const numOnly = (s: string) => s.replace(/\D/g, "");
+
+  const result: Record<string, string> = {};
+  const usedKeys = new Set<string>();
+
+  questions.forEach((q, idx) => {
+    // Tier 1 — exact match
+    if (raw[q.id] !== undefined && !usedKeys.has(q.id)) {
+      result[q.id] = raw[q.id];
+      usedKeys.add(q.id);
+      return;
+    }
+    // Tier 2 — case-insensitive
+    const ci = Object.keys(raw).find(k => !usedKeys.has(k) && k.toLowerCase() === q.id.toLowerCase());
+    if (ci) { result[q.id] = raw[ci]; usedKeys.add(ci); return; }
+
+    // Tier 3 — normalise symbols (q_1, q-1, q.1 → q1)
+    const qNorm = normKey(q.id);
+    const sym = Object.keys(raw).find(k => !usedKeys.has(k) && normKey(k) === qNorm);
+    if (sym) { result[q.id] = raw[sym]; usedKeys.add(sym); return; }
+
+    // Tier 3b — numeric suffix (q1 ~ question_1 both end in "1")
+    const qNum = numOnly(q.id);
+    if (qNum) {
+      const numMatch = Object.keys(raw).find(k => !usedKeys.has(k) && numOnly(k) === qNum);
+      if (numMatch) { result[q.id] = raw[numMatch]; usedKeys.add(numMatch); return; }
+    }
+
+    // Tier 4 — positional fallback (first unclaimed key)
+    const available = Object.entries(raw).filter(([k]) => !usedKeys.has(k));
+    if (available.length > 0) {
+      result[q.id] = available[0][1];
+      usedKeys.add(available[0][0]);
+    }
+  });
+
+  console.log("[normalizeGeminiAnswers] mapped:", Object.keys(result).length, "/", questions.length, "questions");
+  return result;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // HASH HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
 function dHash(str: string, idx = 0): number {
@@ -1364,6 +1471,8 @@ export default function App() {
   const [answers, setAnswers]           = useState<Record<string, string>>({});
   const [isGenerating, setIsGenerating] = useState(false);
   const [genErr, setGenErr]             = useState("");
+  const [refreshKey, setRefreshKey]     = useState(0);
+  const [genProgress, setGenProgress]   = useState<string>("");
 
   const [previewPage, setPreviewPage]   = useState(0);
   const [editMode, setEditMode]         = useState(false);
@@ -1570,79 +1679,138 @@ export default function App() {
     setIsDetecting(false);
   };
 
-  const generateAnswers = async (fromPreview = false) => {
+  // ── Core: single API call with retry x3 ─────────────────────────────────────
+  const generateAnswersForPage = async (
+    pageQuestions: DetectedQuestion[],
+    attempt = 1
+  ): Promise<Record<string, string>> => {
+    const MAX_RETRIES = 3;
+    const TIMEOUT_MS  = 45_000;
+
+    setGenProgress(`Tentative ${attempt}/${MAX_RETRIES} · ${pageQuestions.length} questions…`);
+    console.log(`[generateAnswersForPage] attempt ${attempt} for`, pageQuestions.map(q => q.id));
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+    try {
+      const r = await fetch("/api/generate-answers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          questions: pageQuestions,
+          criteriaLevel,
+          studentName: activeProfile.name,
+          variantSeed,
+          pdfPagesBase64: evalPages.map(p => p.base64),
+          saveSession: attempt === 1, // only save on first attempt
+        }),
+      });
+      clearTimeout(timer);
+
+      if (!r.ok) {
+        const text = await r.text().catch(() => "");
+        throw new Error(`HTTP ${r.status}: ${text.substring(0, 150)}`);
+      }
+
+      const d = await r.json();
+      console.log("[generateAnswersForPage] server response:", JSON.stringify(d).substring(0, 400));
+
+      if (!d.success) throw new Error(d.error || "Réponse serveur invalide");
+
+      const rawAnswers: Record<string, unknown> = d.answers || {};
+      console.log("[Gemini RAW answers]", rawAnswers);
+
+      // 4-tier ID normalization
+      const normalized = normalizeGeminiAnswers(rawAnswers, pageQuestions);
+      console.log("[Mapped answers]", normalized);
+
+      // If we got at least one answer, return it
+      if (Object.keys(normalized).length > 0) return normalized;
+
+      // Ultimate fallback: if rawAnswers has values but normalization returned 0
+      if (Object.keys(rawAnswers).length > 0) {
+        console.warn("[generateAnswersForPage] normalization returned 0 — applying pure positional fallback");
+        const allValues = Object.values(rawAnswers).map(v => flattenValue(v)).filter(Boolean);
+        const positional: Record<string, string> = {};
+        pageQuestions.forEach((q, i) => {
+          if (allValues[i]) positional[q.id] = allValues[i];
+        });
+        if (Object.keys(positional).length > 0) return positional;
+      }
+
+      throw new Error(`0 réponse mappée sur ${Object.keys(rawAnswers).length} reçues`);
+
+    } catch (err: unknown) {
+      clearTimeout(timer);
+      const msg = err instanceof Error ? err.message : String(err);
+
+      if (attempt < MAX_RETRIES) {
+        const delay = attempt * 1500; // 1.5s → 3s backoff
+        console.warn(`[generateAnswersForPage] attempt ${attempt} failed (${msg}) — retry in ${delay}ms`);
+        setGenProgress(`Échec tentative ${attempt}. Nouvel essai dans ${delay / 1000}s…`);
+        await new Promise(res => setTimeout(res, delay));
+        return generateAnswersForPage(pageQuestions, attempt + 1);
+      }
+
+      throw new Error(`Échec après ${MAX_RETRIES} tentatives: ${msg}`);
+    }
+  };
+
+  // ── Main orchestrator ─────────────────────────────────────────────────────
+  const generateAllAnswers = async (fromPreview = false) => {
     if (!questions.length) {
       setGenErr("Aucune question détectée. Allez à l'étape 'Résoudre' et détectez d'abord les questions.");
       return;
     }
-    setIsGenerating(true); setGenErr("");
+
+    console.log("[generateAllAnswers] Questions détectées:", questions);
+    setIsGenerating(true);
+    setGenErr("");
+    setGenProgress("Initialisation…");
+
     try {
-      const r = await fetch("/api/generate-answers", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          questions, criteriaLevel, studentName: activeProfile.name,
-          variantSeed, pdfPagesBase64: evalPages.map(p => p.base64), saveSession: true,
-        }),
-      });
-      if (!r.ok) {
-        const text = await r.text().catch(() => "");
-        setGenErr(`Erreur serveur (${r.status}). ${text.substring(0, 200)}`);
-        setIsGenerating(false);
-        return;
+      // Generate all answers in one call (server handles multiple pages)
+      const normalized = await generateAnswersForPage(questions);
+
+      // Apply answers to state
+      setAnswers(normalized);
+      setOffsets({});
+      setRefreshKey(k => k + 1); // force React rerender
+
+      // Navigate to first page that has answers
+      const answeredQuestions = questions.filter(q => normalized[q.id]);
+      if (answeredQuestions.length > 0) {
+        const firstPage = answeredQuestions.reduce((min, q) => Math.min(min, q.pageIndex), Infinity);
+        setPreviewPage(firstPage === Infinity ? 0 : firstPage);
       }
-      const d = await r.json();
-      if (d.success) {
-        const rawAnswers: Record<string, string> = d.answers || {};
-        // Normalize: try direct match first, then case-insensitive, then positional
-        const normalized: Record<string, string> = {};
-        questions.forEach((q, idx) => {
-          if (rawAnswers[q.id]) {
-            normalized[q.id] = rawAnswers[q.id];
-          } else {
-            // Try case-insensitive match
-            const ciKey = Object.keys(rawAnswers).find(k => k.toLowerCase() === q.id.toLowerCase());
-            if (ciKey) { normalized[q.id] = rawAnswers[ciKey]; return; }
-            // Try partial match (e.g. "q1" matches "ex1_q1")
-            const partialKey = Object.keys(rawAnswers).find(k =>
-              k.includes(q.id) || q.id.includes(k) ||
-              k.replace(/[^0-9]/g,'') === (idx+1).toString()
-            );
-            if (partialKey) { normalized[q.id] = rawAnswers[partialKey]; return; }
-            // Positional fallback: assign by order
-            const answerValues = Object.values(rawAnswers);
-            if (answerValues[idx]) { normalized[q.id] = answerValues[idx]; }
-          }
-        });
-        if (Object.keys(normalized).length > 0) {
-          setAnswers(normalized); setOffsets({});
-          const firstPage = questions.filter(q => normalized[q.id]).reduce((min, q) => Math.min(min, q.pageIndex), 0);
-          setPreviewPage(firstPage);
-          setGenErr("");
-          setStep("preview");
-          setSidePanel("position");
-        } else {
-          // Force positional assignment if still empty
-          const forcedAnswers: Record<string, string> = {};
-          const allVals = Object.values(rawAnswers);
-          questions.forEach((q, i) => {
-            if (allVals[i]) forcedAnswers[q.id] = allVals[i];
-          });
-          if (Object.keys(forcedAnswers).length > 0) {
-            setAnswers(forcedAnswers); setOffsets({});
-            setStep("preview"); setSidePanel("position");
-            setGenErr("");
-          } else {
-            setGenErr(`Généré mais IDs non correspondants. Réponses brutes: ${JSON.stringify(rawAnswers).substring(0,200)}`);
-          }
-        }
-      } else {
-        setGenErr(d.error || "Erreur lors de la génération des réponses.");
+
+      setGenProgress("");
+      setGenErr("");
+
+      if (!fromPreview) {
+        setStep("preview");
+        setSidePanel("position");
       }
-    } catch (e: any) {
-      setGenErr(`Erreur réseau : ${e?.message || "connexion impossible"}. Vérifiez votre connexion.`);
+
+      console.log(
+        "[generateAllAnswers] ✅ Done.",
+        Object.keys(normalized).length, "/", questions.length, "answers set"
+      );
+
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error("[generateAllAnswers] ❌ Fatal:", msg);
+      setGenErr(`Erreur de génération: ${msg}`);
+      setGenProgress("");
     }
+
     setIsGenerating(false);
   };
+
+  // Alias for backward compat with places calling generateAnswers()
+  const generateAnswers = generateAllAnswers;
 
   const generateBatchStudentAnswers = async (bsId: string) => {
     const bs = batchStudents.find(b => b.id === bsId);
@@ -2749,148 +2917,232 @@ ${nameOv}${buildAnswers(pi)}</div>`;
                     </div>
 
                     {/* Editable answers panel — always visible when questions exist */}
-                    {questions.length > 0 && (
-                      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                        <div className="px-3 py-2 border-b border-slate-100 flex items-center gap-1.5">
-                          <Edit3 className="h-3 w-3 text-indigo-500" />
-                          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wide flex-1">
-                            RéPONSES
-                            <span className="ml-1 font-normal text-slate-400">
-                              ({Object.values(batchMode && currentBatch ? currentBatch.answers : answers).filter(Boolean).length}/{questions.length})
-                            </span>
-                          </p>
-                          {/* Generate button — always visible */}
-                          <button
-                            onClick={() => generateAnswers(true)}
-                            disabled={isGenerating}
-                            title="Générer / Regénérer toutes les réponses avec Gemini"
-                            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[9px] font-bold transition ${
-                              isGenerating
-                                ? "bg-indigo-100 text-indigo-500 cursor-wait"
-                                : "bg-indigo-500 text-white hover:bg-indigo-600"
-                            }`}>
-                            {isGenerating
-                              ? <RefreshCw className="h-3 w-3 animate-spin" />
-                              : <Sparkles className="h-3 w-3" />}
-                            {isGenerating ? "En cours…" : "Générer"}
-                          </button>
-                        </div>
-                        {/* Error in preview */}
-                        {genErr && (
-                          <div className="mx-3 mt-2 p-2 bg-red-50 border border-red-200 rounded-lg">
-                            <div className="flex items-start gap-1.5">
-                              <AlertCircle className="h-3 w-3 text-red-500 shrink-0 mt-0.5" />
-                              <p className="text-[9px] font-medium text-red-600 flex-1 break-words">{genErr}</p>
+                    {questions.length > 0 && (() => {
+                      const activeAnswersForPanel = batchMode && currentBatch ? currentBatch.answers : answers;
+                      const answeredCount = Object.values(activeAnswersForPanel).filter(Boolean).length;
+                      const totalCount    = questions.length;
+
+                      // Per-page answer counters
+                      const pageNums = [...new Set(questions.map(q => q.pageIndex))].sort((a, b) => a - b);
+                      const pageCounters = pageNums.map(pg => {
+                        const pgQs  = questions.filter(q => q.pageIndex === pg);
+                        const pgAns = pgQs.filter(q => activeAnswersForPanel[q.id]).length;
+                        return { pg, total: pgQs.length, answered: pgAns };
+                      });
+
+                      return (
+                        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                          {/* Header */}
+                          <div className="px-3 py-2 border-b border-slate-100 flex items-center gap-1.5">
+                            <Edit3 className="h-3 w-3 text-indigo-500" />
+                            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wide flex-1">
+                              RÉPONSES
+                              <span className={`ml-1 font-normal ${answeredCount === totalCount ? "text-emerald-500" : "text-slate-400"}`}>
+                                ({answeredCount}/{totalCount})
+                              </span>
+                            </p>
+                            {/* Per-page badges */}
+                            <div className="flex gap-0.5 flex-wrap">
+                              {pageCounters.map(({ pg, total, answered }) => (
+                                <button
+                                  key={pg}
+                                  onClick={() => setPreviewPage(pg)}
+                                  title={`Page ${pg + 1}: ${answered}/${total} réponses`}
+                                  className={`text-[8px] font-bold px-1.5 py-0.5 rounded transition ${
+                                    pg === previewPage
+                                      ? "bg-indigo-500 text-white"
+                                      : answered === total
+                                      ? "bg-emerald-100 text-emerald-700 hover:bg-emerald-200"
+                                      : answered > 0
+                                      ? "bg-amber-100 text-amber-700 hover:bg-amber-200"
+                                      : "bg-slate-100 text-slate-500 hover:bg-slate-200"
+                                  }`}>
+                                  P.{pg + 1} ({answered}/{total})
+                                </button>
+                              ))}
                             </div>
-                            <button onClick={() => setGenErr("")} className="text-[8px] text-red-400 underline mt-0.5">Fermer</button>
+                            {/* Generate / Régénérer button */}
+                            <button
+                              onClick={() => generateAllAnswers(true)}
+                              disabled={isGenerating}
+                              title={answeredCount > 0 ? "Régénérer toutes les réponses" : "Générer les réponses avec Gemini"}
+                              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[9px] font-bold transition ${
+                                isGenerating
+                                  ? "bg-indigo-100 text-indigo-500 cursor-wait"
+                                  : answeredCount > 0
+                                  ? "bg-amber-500 text-white hover:bg-amber-600"
+                                  : "bg-indigo-500 text-white hover:bg-indigo-600"
+                              }`}>
+                              {isGenerating
+                                ? <RefreshCw className="h-3 w-3 animate-spin" />
+                                : answeredCount > 0
+                                ? <RefreshCw className="h-3 w-3" />
+                                : <Sparkles className="h-3 w-3" />}
+                              {isGenerating ? "En cours…" : answeredCount > 0 ? "Régénérer" : "Générer"}
+                            </button>
                           </div>
-                        )}
-                        {/* Loading */}
-                        {isGenerating && (
-                          <div className="mx-3 mt-2 mb-1 p-2 bg-indigo-50 border border-indigo-100 rounded-lg flex items-center gap-2">
-                            <RefreshCw className="h-3.5 w-3.5 text-indigo-500 animate-spin shrink-0" />
-                            <div>
-                              <p className="text-[9px] text-indigo-700 font-bold">Gemini rédige les réponses…</p>
-                              <p className="text-[8px] text-indigo-400">{questions.length} questions · niveau {criteriaLevel} · {activeProfile.name}</p>
-                            </div>
-                          </div>
-                        )}
-                        {/* All questions — shown always */}
-                        <div className="p-3 space-y-2 max-h-64 overflow-y-auto">
-                          {/* No answers CTA */}
-                          {!batchMode && Object.values(answers).filter(Boolean).length === 0 && !isGenerating && (
-                            <div className="p-3 bg-gradient-to-br from-indigo-50 to-purple-50 border border-indigo-200 rounded-xl text-center space-y-2">
-                              <div className="flex items-center justify-center gap-2">
-                                <Sparkles className="h-5 w-5 text-indigo-400" />
-                                <p className="text-xs font-black text-indigo-700">{questions.length} question{questions.length !== 1 ? 's' : ''} prête{questions.length !== 1 ? 's' : ''}</p>
+
+                          {/* Error */}
+                          {genErr && (
+                            <div className="mx-3 mt-2 p-2 bg-red-50 border border-red-200 rounded-lg">
+                              <div className="flex items-start gap-1.5">
+                                <AlertCircle className="h-3 w-3 text-red-500 shrink-0 mt-0.5" />
+                                <p className="text-[9px] font-medium text-red-600 flex-1 break-words">{genErr}</p>
                               </div>
-                              <p className="text-[9px] text-indigo-500">Cliquez Générer pour que Gemini écrive les réponses automatiquement dans chaque case</p>
-                              <button onClick={() => generateAnswers(true)} disabled={isGenerating}
-                                className="w-full py-2.5 bg-indigo-500 text-white rounded-xl font-black text-xs flex items-center justify-center gap-2 shadow-lg shadow-indigo-200 hover:bg-indigo-600 transition">
-                                <Sparkles className="h-3.5 w-3.5" /> Générer avec Gemini
-                              </button>
+                              <div className="flex items-center gap-2 mt-1">
+                                <button onClick={() => setGenErr("")} className="text-[8px] text-red-400 underline">Fermer</button>
+                                <button onClick={() => generateAllAnswers(true)} className="text-[8px] text-indigo-500 underline font-bold">Réessayer</button>
+                              </div>
                             </div>
                           )}
-                          {questions.map((q, qi) => {
-                            const val = batchMode && currentBatch ? (currentBatch.answers[q.id] ?? "") : (answers[q.id] ?? "");
-                            const isCurrentPage = q.pageIndex === previewPage;
-                            return (
-                              <div key={q.id} className={`space-y-1 p-1.5 rounded-lg border transition ${
-                                val ? "border-emerald-200 bg-emerald-50/40" : isCurrentPage ? "border-indigo-200 bg-indigo-50/30" : "border-slate-100 bg-slate-50"
-                              }`}>
-                                <div className="flex items-center gap-1">
-                                  <button
-                                    onClick={() => setPreviewPage(q.pageIndex)}
-                                    className={`text-[8px] font-bold px-1 py-0.5 rounded shrink-0 ${
-                                      isCurrentPage ? "bg-indigo-500 text-white" : "bg-slate-200 text-slate-500 hover:bg-indigo-200"
-                                    }`}>
-                                    P.{q.pageIndex + 1}
-                                  </button>
-                                  <label className="text-[9px] font-bold flex-1 truncate cursor-default" title={q.text}>
-                                    <span className={val ? "text-emerald-600" : "text-slate-400"}>
-                                      {val ? "✅" : "⏳"} {q.text.substring(0, 30)}{q.text.length > 30 ? "…" : ""}
-                                    </span>
-                                  </label>
+
+                          {/* Progress / Spinner */}
+                          {isGenerating && (
+                            <div className="mx-3 mt-2 mb-1 p-2 bg-indigo-50 border border-indigo-100 rounded-lg">
+                              <div className="flex items-center gap-2">
+                                <RefreshCw className="h-3.5 w-3.5 text-indigo-500 animate-spin shrink-0" />
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-[9px] text-indigo-700 font-bold truncate">
+                                    {genProgress || "Gemini rédige les réponses…"}
+                                  </p>
+                                  <p className="text-[8px] text-indigo-400">{totalCount} questions · niveau {criteriaLevel} · {activeProfile.name}</p>
                                 </div>
-                                <div className="flex gap-1 items-start">
-                                  <textarea
-                                    value={val}
-                                    onChange={e => {
-                                      const v = e.target.value;
-                                      if (batchMode && currentBatch) {
-                                        setBatchStudents(prev => prev.map(b =>
-                                          b.id === currentBatch.id ? { ...b, answers: { ...b.answers, [q.id]: v } } : b
-                                        ));
-                                      } else {
-                                        setAnswers(prev => ({ ...prev, [q.id]: v }));
-                                      }
-                                    }}
-                                    rows={val ? 3 : 2}
-                                    className={`flex-1 border rounded-lg p-1.5 text-[10px] focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-transparent resize-none font-medium transition ${
-                                      val ? "border-emerald-200 bg-white" : "border-slate-200 bg-slate-50"
-                                    }`}
-                                    placeholder={isGenerating ? "Génération en cours…" : "Réponse IA (cliquer Générer) ou taper manuellement"}
-                                  />
-                                  <div className="flex flex-col gap-0.5 mt-0.5">
+                              </div>
+                              {/* Progress bar */}
+                              <div className="mt-1.5 bg-indigo-100 rounded-full h-1 overflow-hidden">
+                                <div
+                                  className="h-full bg-indigo-500 rounded-full transition-all duration-500"
+                                  style={{ width: `${totalCount > 0 ? (answeredCount / totalCount) * 100 : 0}%` }}
+                                />
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Questions list */}
+                          <div key={refreshKey} className="p-3 space-y-2 max-h-72 overflow-y-auto">
+                            {/* Empty state CTA */}
+                            {!batchMode && answeredCount === 0 && !isGenerating && (
+                              <div className="p-3 bg-gradient-to-br from-indigo-50 to-purple-50 border border-indigo-200 rounded-xl text-center space-y-2">
+                                <div className="flex items-center justify-center gap-2">
+                                  <Sparkles className="h-5 w-5 text-indigo-400" />
+                                  <p className="text-xs font-black text-indigo-700">
+                                    {totalCount} question{totalCount !== 1 ? "s" : ""} prête{totalCount !== 1 ? "s" : ""}
+                                  </p>
+                                </div>
+                                <p className="text-[9px] text-indigo-500">
+                                  Cliquez Générer pour que Gemini écrive les réponses automatiquement dans chaque case
+                                </p>
+                                <button
+                                  onClick={() => generateAllAnswers(true)}
+                                  disabled={isGenerating}
+                                  className="w-full py-2.5 bg-indigo-500 text-white rounded-xl font-black text-xs flex items-center justify-center gap-2 shadow-lg shadow-indigo-200 hover:bg-indigo-600 transition">
+                                  <Sparkles className="h-3.5 w-3.5" /> Générer avec Gemini
+                                </button>
+                              </div>
+                            )}
+
+                            {questions.map((q) => {
+                              const val = batchMode && currentBatch
+                                ? (currentBatch.answers[q.id] ?? "")
+                                : (answers[q.id] ?? "");
+                              const isCurrentPage = q.pageIndex === previewPage;
+                              const statusIcon = isGenerating && !val ? "⏳" : val ? "✅" : "⚠️";
+                              return (
+                                <div
+                                  key={q.id}
+                                  className={`space-y-1 p-1.5 rounded-lg border transition-all duration-200 ${
+                                    val
+                                      ? "border-emerald-200 bg-emerald-50/40"
+                                      : isCurrentPage
+                                      ? "border-indigo-200 bg-indigo-50/30"
+                                      : "border-slate-100 bg-slate-50"
+                                  }`}
+                                >
+                                  <div className="flex items-center gap-1">
                                     <button
-                                      title="Recentrer sur la page"
-                                      onClick={() => {
+                                      onClick={() => setPreviewPage(q.pageIndex)}
+                                      className={`text-[8px] font-bold px-1 py-0.5 rounded shrink-0 transition ${
+                                        isCurrentPage
+                                          ? "bg-indigo-500 text-white"
+                                          : "bg-slate-200 text-slate-500 hover:bg-indigo-200"
+                                      }`}>
+                                      P.{q.pageIndex + 1}
+                                    </button>
+                                    <label className="text-[9px] font-bold flex-1 truncate cursor-default" title={q.text}>
+                                      <span className={val ? "text-emerald-600" : "text-slate-400"}>
+                                        {statusIcon} {q.text.substring(0, 30)}{q.text.length > 30 ? "…" : ""}
+                                      </span>
+                                    </label>
+                                  </div>
+                                  <div className="flex gap-1 items-start">
+                                    <textarea
+                                      value={val}
+                                      onChange={e => {
+                                        const v = e.target.value;
                                         if (batchMode && currentBatch) {
                                           setBatchStudents(prev => prev.map(b =>
-                                            b.id === currentBatch.id ? { ...b, offsets: { ...b.offsets, [q.id]: { x: 0, y: 0 } } } : b
+                                            b.id === currentBatch.id
+                                              ? { ...b, answers: { ...b.answers, [q.id]: v } }
+                                              : b
                                           ));
                                         } else {
-                                          setOffsets(prev => ({ ...prev, [q.id]: { x: 0, y: 0 } }));
+                                          setAnswers(prev => ({ ...prev, [q.id]: v }));
                                         }
                                       }}
-                                      className="px-1.5 py-1 bg-indigo-500 text-white rounded-lg text-[9px] font-bold hover:bg-indigo-600 transition shrink-0"
-                                    >○</button>
-                                    {val && (
+                                      rows={val ? 3 : 2}
+                                      className={`flex-1 border rounded-lg p-1.5 text-[10px] focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-transparent resize-none font-medium transition ${
+                                        val ? "border-emerald-200 bg-white" : "border-slate-200 bg-slate-50"
+                                      }`}
+                                      placeholder={isGenerating ? "Génération en cours…" : "Réponse IA (cliquer Générer) ou taper manuellement"}
+                                    />
+                                    <div className="flex flex-col gap-0.5 mt-0.5">
                                       <button
-                                        title="Effacer cette réponse"
+                                        title="Recentrer sur la page"
                                         onClick={() => {
                                           if (batchMode && currentBatch) {
                                             setBatchStudents(prev => prev.map(b =>
-                                              b.id === currentBatch.id ? { ...b, answers: { ...b.answers, [q.id]: "" } } : b
+                                              b.id === currentBatch.id
+                                                ? { ...b, offsets: { ...b.offsets, [q.id]: { x: 0, y: 0 } } }
+                                                : b
                                             ));
                                           } else {
-                                            setAnswers(prev => ({ ...prev, [q.id]: "" }));
+                                            setOffsets(prev => ({ ...prev, [q.id]: { x: 0, y: 0 } }));
                                           }
                                         }}
-                                        className="px-1.5 py-1 bg-red-50 border border-red-200 text-red-400 rounded-lg text-[9px] hover:bg-red-100 transition shrink-0"
-                                      >✕</button>
-                                    )}
+                                        className="px-1.5 py-1 bg-indigo-500 text-white rounded-lg text-[9px] font-bold hover:bg-indigo-600 transition shrink-0"
+                                      >○</button>
+                                      {val && (
+                                        <button
+                                          title="Effacer cette réponse"
+                                          onClick={() => {
+                                            if (batchMode && currentBatch) {
+                                              setBatchStudents(prev => prev.map(b =>
+                                                b.id === currentBatch.id
+                                                  ? { ...b, answers: { ...b.answers, [q.id]: "" } }
+                                                  : b
+                                              ));
+                                            } else {
+                                              setAnswers(prev => ({ ...prev, [q.id]: "" }));
+                                            }
+                                          }}
+                                          className="px-1.5 py-1 bg-red-50 border border-red-200 text-red-400 rounded-lg text-[9px] hover:bg-red-100 transition shrink-0"
+                                        >✕</button>
+                                      )}
+                                    </div>
                                   </div>
                                 </div>
-                              </div>
-                            );
-                          })}
+                              );
+                            })}
+                          </div>
+
+                          <div className="px-3 py-1.5 border-t border-slate-100">
+                            <p className="text-[8px] text-slate-300 font-medium">
+                              Édition temps réel · ○ recentre · ✅ réponse présente · ⚠️ manquante
+                            </p>
+                          </div>
                         </div>
-                        <div className="px-3 py-1.5 border-t border-slate-100">
-                          <p className="text-[8px] text-slate-300 font-medium">Édition temps réel · ○ recentre · Essai avec "Déplacer"</p>
-                        </div>
-                      </div>
-                    )}
+                      );
+                    })()}
                   </div>
                 </div>
 

@@ -119,6 +119,52 @@ const EvalSessionSchema = new Schema<IEvalSession>({
 
 const EvalSession = mongoose.models.EvalSession || model<IEvalSession>("EvalSession", EvalSessionSchema);
 
+// ─── Safe Gemini JSON parser ─────────────────────────────────────────────────
+/**
+ * Strips markdown fences, isolates the outermost JSON object, and parses it.
+ * Never throws — returns {} on any failure.
+ */
+function safeParseGeminiResponse(raw: string): Record<string, unknown> {
+  if (!raw || typeof raw !== "string") return {};
+
+  let cleaned = raw.trim();
+
+  // Strip ```json ... ``` or ``` ... ``` fences (multiline)
+  cleaned = cleaned.replace(/^```(?:json)?\s*/im, "").replace(/\s*```\s*$/im, "");
+
+  // Find the outermost JSON object boundaries
+  const jsonStart = cleaned.indexOf("{");
+  const jsonEnd   = cleaned.lastIndexOf("}");
+  if (jsonStart !== -1 && jsonEnd > jsonStart) {
+    cleaned = cleaned.slice(jsonStart, jsonEnd + 1);
+  }
+
+  console.log("[Gemini CLEAN]", cleaned.substring(0, 300));
+
+  try {
+    return JSON.parse(cleaned) as Record<string, unknown>;
+  } catch (e) {
+    console.error("[Gemini PARSE ERROR] Could not parse JSON:", (e as Error).message);
+    console.error("[Gemini RAW snippet]", cleaned.substring(0, 500));
+    return {};
+  }
+}
+
+/**
+ * Extract every string leaf from an arbitrarily nested object.
+ * Used as ultimate fallback to harvest any text Gemini returned.
+ */
+function extractAllStrings(obj: unknown, result: string[] = []): string[] {
+  if (typeof obj === "string" && obj.trim()) {
+    result.push(obj.trim());
+  } else if (Array.isArray(obj)) {
+    obj.forEach(v => extractAllStrings(v, result));
+  } else if (obj !== null && typeof obj === "object") {
+    Object.values(obj as Record<string, unknown>).forEach(v => extractAllStrings(v, result));
+  }
+  return result;
+}
+
 // ─── Gemini client ────────────────────────────────────────────────────────────
 function getAIClient() {
   const apiKey = process.env.GEMINI_API_KEY || process.env.GEMINI_KEY;
@@ -278,7 +324,8 @@ app.post("/api/analyze-handwriting", async (req, res): Promise<any> => {
         });
 
         if (response.text) {
-          analyzedStyle = JSON.parse(response.text.trim());
+          const p = safeParseGeminiResponse(response.text);
+          if (Object.keys(p).length) analyzedStyle = p;
         }
       } catch (e) {
         console.error("Erreur analyse écriture Gemini:", e);
@@ -379,8 +426,30 @@ app.post("/api/detect-questions", async (req, res): Promise<any> => {
       return res.status(500).json({ success: false, error: "Réponse vide de Gemini." });
     }
 
-    const parsed = JSON.parse(response.text.trim());
-    return res.json({ success: true, questions: parsed.questions });
+    console.log("[Gemini RAW /detect-questions]", response.text.substring(0, 500));
+
+    const parsed = safeParseGeminiResponse(response.text);
+
+    // Accept both {questions:[...]} and bare array
+    let detectedQs: unknown[] = [];
+    if (Array.isArray(parsed.questions)) {
+      detectedQs = parsed.questions;
+    } else if (Array.isArray(parsed)) {
+      detectedQs = parsed as unknown[];
+    }
+
+    // Normalise each question object: accept type/kind/elementType fields
+    const normalised = detectedQs.map((q: any, i: number) => ({
+      id:        q.id || q.questionId || `q${i + 1}`,
+      text:      q.text || q.question || q.content || q.label || `Question ${i + 1}`,
+      pageIndex: typeof q.pageIndex === "number" ? q.pageIndex : (typeof q.page === "number" ? q.page : 0),
+      x:         typeof q.x === "number" ? q.x : 10,
+      y:         typeof q.y === "number" ? q.y : 20 + i * 10,
+    })).filter((q: any) => q.text && q.text.trim().length > 1);
+
+    console.log("[detect-questions] found", normalised.length, "questions");
+
+    return res.json({ success: true, questions: normalised });
   } catch (err: any) {
     console.error("Erreur detect-questions:", err);
     return res.status(500).json({ success: false, error: err.message });
@@ -442,8 +511,10 @@ app.post("/api/generate-answers", async (req, res): Promise<any> => {
     }
 
     const questionsList = questions
-      .map((q: any) => `  - ID: "${q.id}" | QUESTION: "${q.text}"`)
+      .map((q: any, i: number) => `  [${i + 1}] ID_EXACT="${q.id}" | QUESTION: "${q.text}"`)
       .join("\n");
+
+    const questionIds = questions.map((q: any) => `"${q.id}"`).join(", ");
 
     contentParts.push({
       text:
@@ -458,7 +529,11 @@ app.post("/api/generate-answers", async (req, res): Promise<any> => {
         `- Si niveau 1-2: fais quelques petites erreurs naturelles\n` +
         `- Si niveau 7-8: sois très précis et complet\n\n` +
         `QUESTIONS AUXQUELLES RÉPONDRE:\n${questionsList}\n\n` +
-        `Retourne un JSON {"answers": {"<id>": "<réponse_complète>", ...}} pour TOUTES les questions.`,
+        `⚠️ CRITIQUE — RÈGLE D'OR: Dans le JSON de réponse, utilise OBLIGATOIREMENT ces IDs EXACTS comme clés:\n` +
+        `IDs exacts: ${questionIds}\n` +
+        `NE JAMAIS utiliser: "question_1", "q_1", "reponse_1" ou tout autre format.\n` +
+        `TOUJOURS utiliser l'ID_EXACT tel qu'il est écrit ci-dessus.\n\n` +
+        `Retourne UNIQUEMENT un JSON: {"answers": {"<ID_EXACT>": "<réponse_complète>", ...}} pour TOUTES les ${questions.length} questions.`,
     });
 
     const response = await ai.models.generateContent({
@@ -483,8 +558,51 @@ app.post("/api/generate-answers", async (req, res): Promise<any> => {
       return res.status(500).json({ success: false, error: "Réponse vide de Gemini." });
     }
 
-    const parsed = JSON.parse(response.text.trim());
-    const answers = parsed.answers || {};
+    console.log("[Gemini RAW /generate-answers]", response.text.substring(0, 500));
+
+    // ── Safe parsing ──────────────────────────────────────────────────────────
+    const parsed = safeParseGeminiResponse(response.text);
+
+    // Primary: parsed.answers object
+    let answers: Record<string, string> = {};
+    if (parsed.answers && typeof parsed.answers === "object" && !Array.isArray(parsed.answers)) {
+      answers = Object.fromEntries(
+        Object.entries(parsed.answers as Record<string, unknown>).map(([k, v]) => [
+          k,
+          typeof v === "string" ? v : JSON.stringify(v),
+        ])
+      );
+    }
+
+    // Fallback A: root-level keys that look like answers (not "answers" wrapper)
+    if (Object.keys(answers).length === 0 && Object.keys(parsed).length > 0) {
+      console.warn("[generate-answers] 'answers' key missing — trying root keys");
+      answers = Object.fromEntries(
+        Object.entries(parsed)
+          .filter(([k]) => k !== "answers")
+          .map(([k, v]) => [k, typeof v === "string" ? v : JSON.stringify(v)])
+      );
+    }
+
+    // Fallback B: extract all strings and assign positionally
+    if (Object.keys(answers).length === 0 && response.text) {
+      console.warn("[generate-answers] no structured answers — positional string extraction");
+      const allStrings = extractAllStrings(parsed);
+      if (allStrings.length === 0) {
+        // Last resort: split raw text into chunks
+        const chunks = response.text
+          .replace(/[{}"[\]\\]/g, " ")
+          .split(/[,\n]+/)
+          .map(s => s.trim())
+          .filter(s => s.length > 5);
+        allStrings.push(...chunks);
+      }
+      (questions as Array<{ id: string }>).forEach((q, i) => {
+        if (allStrings[i]) answers[q.id] = allStrings[i];
+      });
+    }
+
+    console.log("[generate-answers] final answer keys:", Object.keys(answers));
 
     // Save session to MongoDB if requested
     if (saveSession && mongoose.connection.readyState === 1) {
@@ -563,7 +681,7 @@ app.post("/api/analyze", async (req, res): Promise<any> => {
               },
             },
           });
-          if (response.text) analyzedStyle = JSON.parse(response.text.trim());
+          if (response.text) { const p = safeParseGeminiResponse(response.text); if (Object.keys(p).length) analyzedStyle = p; }
         } catch (e) {
           analyzedStyle = { suggestedFont: "Homemade Apple", suggestedColor: "blue", suggestedSize: 18, suggestedRotation: -2, analysisDescription: "Défaut", confidenceScore: 50 };
         }
@@ -601,8 +719,8 @@ app.post("/api/analyze", async (req, res): Promise<any> => {
             },
           });
           if (response.text) {
-            const parsed = JSON.parse(response.text.trim());
-            return res.json({ success: true, questions: parsed.questions, answers: parsed.answers, handwritingStyle: analyzedStyle });
+            const parsed = safeParseGeminiResponse(response.text);
+            return res.json({ success: true, questions: parsed.questions || [], answers: parsed.answers || {}, handwritingStyle: analyzedStyle });
           }
         } catch (e) {
           return res.status(500).json({ success: false, error: "Erreur Gemini." });
