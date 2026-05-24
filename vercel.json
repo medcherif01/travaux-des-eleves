@@ -19,6 +19,7 @@
     "api/students.ts": { "maxDuration": 30 },
     "api/analyze-handwriting.ts": { "maxDuration": 60 },
     "api/detect-questions.ts": { "maxDuration": 60 },
-    "api/generate-answers.ts": { "maxDuration": 60 }
+    "api/generate-answers.ts": { "maxDuration": 60 },
+    "api/generate-comments.ts": { "maxDuration": 60 }
   }
 }
