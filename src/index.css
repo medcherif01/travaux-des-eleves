@@ -1,0 +1,149 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Caveat:wght@400;600;700&family=Kalam:wght@400;700&family=Shadows+Into+Light&family=Indie+Flower&family=Architects+Daughter&family=Schoolbell&family=Parisienne&family=Allura&family=Homemade+Apple&family=Bad+Script&family=Marck+Script&family=La+Belle+Aurore&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-caveat: "Caveat", cursive;
+  --font-kalam: "Kalam", cursive;
+  --font-shadows: "Shadows Into Light", cursive;
+  --font-indie: "Indie Flower", cursive;
+  --font-architects: "Architects Daughter", cursive;
+  --font-schoolbell: "Schoolbell", cursive;
+  --font-parisienne: "Parisienne", cursive;
+  --font-allura: "Allura", cursive;
+  --font-homemade: "Homemade Apple", cursive;
+  --font-badscript: "Bad Script", cursive;
+  --font-marck: "Marck Script", cursive;
+  --font-la-belle: "La Belle Aurore", cursive;
+}
+
+/* Custom handwriting utility utilities */
+.handwriting-caveat { font-family: "Caveat", cursive; }
+.handwriting-kalam { font-family: "Kalam", cursive; }
+.handwriting-shadows { font-family: "Shadows Into Light", cursive; }
+.handwriting-indie { font-family: "Indie Flower", cursive; }
+.handwriting-architects { font-family: "Architects Daughter", cursive; }
+.handwriting-schoolbell { font-family: "Schoolbell", cursive; }
+.handwriting-parisienne { font-family: "Parisienne", cursive; }
+.handwriting-allura { font-family: "Allura", cursive; }
+.handwriting-homemade { font-family: "Homemade Apple", cursive; }
+.handwriting-badscript { font-family: "Bad Script", cursive; }
+.handwriting-marck { font-family: "Marck Script", cursive; }
+.handwriting-la-belle { font-family: "La Belle Aurore", cursive; }
+
+body {
+  background-color: #f8fafc;
+  color: #1e293b;
+  font-family: var(--font-sans);
+}
+
+/* Dotted background matching paper sheet grids */
+.bg-grid-pattern {
+  background-size: 24px 24px;
+  background-image: radial-gradient(circle, #cbd5e1 1.2px, transparent 1.2px);
+}
+
+/* French school notebook ruling (Seyès) */
+.bg-seyyes-pattern {
+  background-color: #fafaf9;
+  background-image: 
+    /* Pink margin on the left (around 80px) */
+    linear-gradient(90deg, transparent 89px, #f43f5e 89px, #f43f5e 91px, transparent 91px),
+    /* Main baseline purple lines every 32px */
+    linear-gradient(0deg, #818cf8 1.5px, transparent 1.5px),
+    /* Vertical grid lines every 32px */
+    linear-gradient(90deg, rgba(129, 140, 248, 0.15) 1px, transparent 1px),
+    /* Secondary auxiliary lines every 8px */
+    linear-gradient(0deg, rgba(129, 140, 248, 0.25) 0.8px, transparent 0.8px);
+  background-size: 100% 100%, 100% 32px, 32px 100%, 100% 8px;
+}
+
+/* Classic French math class squared paper (Petits carreaux) */
+.bg-carreaux-pattern {
+  background-color: #faf8f5;
+  background-image: 
+    /* Red/pink vertical margin line */
+    linear-gradient(90deg, transparent 89px, #f43f5e 89px, #f43f5e 90.5px, transparent 90.5px),
+    /* Grid horizontal and vertical lines (5mm / 20px squares) */
+    linear-gradient(0deg, #d1d5db 1px, transparent 1px),
+    linear-gradient(90deg, #d1d5db 1px, transparent 1px);
+  background-size: 100% 100%, 20px 20px, 20px 20px;
+}
+
+/* Smooth organic ink soaking blend */
+.ink-soaking {
+  filter: drop-shadow(0.1px 0.1px 0.2px rgba(0,0,0,0.4));
+  letter-spacing: -0.01em;
+  font-weight: 500;
+}
+
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 0;
+  }
+
+  html, body {
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 210mm !important;
+    height: 297mm !important;
+    overflow: visible !important;
+    background-color: white !important;
+    background: white !important;
+    color: black !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Hide app bar header, settings panels drawers and floating help menus */
+  header, aside, footer, button, .action-toolbar, .print\:hidden {
+    display: none !important;
+    visibility: hidden !important;
+    height: 0 !important;
+    overflow: hidden !important;
+  }
+
+  /* Expand main and remove screens colors/borders */
+  main, .lg:col-span-7, .bg-grid-pattern, .bg-black\/15 {
+    background: none !important;
+    background-color: white !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    width: 100% !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  /* Style worksheet print document to snap exactly onto A4 page boundaries */
+  #printed-worksheet-paper {
+    background-color: white !important;
+    background: white !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    width: 210mm !important;
+    height: 297mm !important;
+    min-height: 297mm !important;
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    margin: 0 !important;
+    padding: 12mm 16mm !important;
+    border: none !important;
+    box-shadow: none !important;
+    transform: none !important;
+    box-sizing: border-box !important;
+    overflow: visible !important;
+    z-index: 1000 !important;
+  }
+
+  /* Hide bounding boxes on hover during printing */
+  .group, .hover\:border-violet-300, .border-dashed, .border-transparent {
+    border-color: transparent !important;
+    background-color: transparent !important;
+    box-shadow: none !important;
+  }
+}
+

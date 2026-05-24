@@ -1,0 +1,6 @@
+{
+  "name": "Nanobanana Écriture",
+  "description": "Générez des fiches d'évaluation complétées avec l'écriture manuscrite de l'élève selon une note cible et un échantillon d'écriture.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
