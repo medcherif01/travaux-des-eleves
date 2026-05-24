@@ -15,7 +15,7 @@ import {
   Edit3, RefreshCw, User, Users, Plus, Trash2, ChevronLeft, ChevronRight,
   Save, Printer, Move, BookOpen, Zap, Sliders, Eye,
   PenTool, Triangle, Circle, Minus, MessageSquare, X, Settings,
-  ToggleLeft, ToggleRight, Eraser, Image, Palette,
+  ToggleLeft, ToggleRight, Eraser, Image, Palette, Search,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { PRELOADED_TEMPLATES, EXAM_CRITERIA_LEVELS } from "./templates";
