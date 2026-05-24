@@ -110,9 +110,13 @@ interface TeacherComment {
   symbol?: string;
   position: "above" | "right" | "below" | "margin";
   style?: "check" | "cross" | "circle" | "underline" | "arrow";
-  /** offset from default position in px */
+  /** offset in SVG coordinate units (0-100 x, 0-141.4 y) */
   ox: number;
   oy: number;
+  /** Teacher annotation style */
+  teacherFontKey: string;   // font key from HANDWRITING_FONTS
+  teacherFontSize: number;  // SVG font-size (1-5 units)
+  teacherColor: string;     // default "#cc0000"
 }
 
 /** Geometry shape drawn on a page */
@@ -183,6 +187,11 @@ const COLOR_MAP: Record<string, string> = {
 
 function getFontVar(key: string) { return HANDWRITING_FONTS.find(f => f.key === key)?.cssVar ?? "--font-homemade"; }
 function getFontFamily(key: string) { return HANDWRITING_FONTS.find(f => f.key === key)?.family ?? "Homemade Apple"; }
+
+/** Teacher comment defaults — used in CommentManager + generateComments */
+const DEFAULT_TEACHER_FONT     = "homemade-apple";
+const DEFAULT_TEACHER_COLOR    = "#cc0000";
+const DEFAULT_TEACHER_FONTSIZE = 2.4;
 
 function defaultProfile(name = "Élève 1"): StudentProfile {
   return {
@@ -441,13 +450,14 @@ function GeometryLayer({ shapes, pageIndex, filterId }: {
 // ─────────────────────────────────────────────────────────────────────────────
 // TEACHER COMMENT LAYER — red ink annotations
 // ─────────────────────────────────────────────────────────────────────────────
-function TeacherCommentLayer({ comments, questions, answers, filterId, draggable, onDrag }: {
+function TeacherCommentLayer({ comments, questions, answers, filterId, draggable, onDrag, svgContainerRef }: {
   comments: TeacherComment[];
   questions: DetectedQuestion[];
   answers: Record<string, string>;
   filterId: string;
   draggable?: boolean;
-  onDrag?: (qId: string, dx: number, dy: number) => void;
+  onDrag?: (qId: string, svgDx: number, svgDy: number) => void;
+  svgContainerRef?: React.RefObject<HTMLDivElement | null>;
 }) {
   const dragging = useRef<string | null>(null);
   const last = useRef({ x: 0, y: 0 });
@@ -456,14 +466,20 @@ function TeacherCommentLayer({ comments, questions, answers, filterId, draggable
     if (!draggable) return;
     const mv = (e: MouseEvent) => {
       if (!dragging.current || !onDrag) return;
-      onDrag(dragging.current, e.clientX - last.current.x, e.clientY - last.current.y);
+      // Convert pixel deltas to SVG coordinate space (viewBox 0-100 x, 0-141.4 y)
+      const container = svgContainerRef?.current;
+      const cw = container ? container.offsetWidth  : 600;
+      const ch = container ? container.offsetHeight : 848;
+      const svgDx = ((e.clientX - last.current.x) / cw) * 100;
+      const svgDy = ((e.clientY - last.current.y) / ch) * 141.4;
+      onDrag(dragging.current, svgDx, svgDy);
       last.current = { x: e.clientX, y: e.clientY };
     };
     const up = () => { dragging.current = null; };
     window.addEventListener("mousemove", mv);
     window.addEventListener("mouseup", up);
     return () => { window.removeEventListener("mousemove", mv); window.removeEventListener("mouseup", up); };
-  }, [draggable, onDrag]);
+  }, [draggable, onDrag, svgContainerRef]);
 
   return (
     <>
@@ -471,15 +487,20 @@ function TeacherCommentLayer({ comments, questions, answers, filterId, draggable
         const q = questions.find(q => q.id === c.qId);
         if (!q || !answers[c.qId]) return null;
 
-        // Base position relative to the question anchor
+        // Base position relative to the question anchor (all in SVG % units)
         let bx = q.x, by = q.y;
         if (c.position === "right")  { bx = q.x + (q.maxWidth ?? 78) + 2; by = q.y + 1; }
-        if (c.position === "above")  { bx = q.x; by = Math.max(1, q.y - 3); }
-        if (c.position === "below")  { bx = q.x; by = q.y + 4; }
+        if (c.position === "above")  { bx = q.x; by = Math.max(1, q.y - 4); }
+        if (c.position === "below")  { bx = q.x; by = q.y + 6; }
         if (c.position === "margin") { bx = 1; by = q.y + 1; }
 
-        const cx = bx + c.ox * 0.1;
-        const cy = by + c.oy * 0.1;
+        // ox/oy are already in SVG coordinate units
+        const cx = bx + c.ox;
+        const cy = by + c.oy;
+
+        const fillColor = c.teacherColor || "#cc0000";
+        const fSize = c.teacherFontSize || 2.4;
+        const fFamily = getFontVar(c.teacherFontKey || "homemade-apple");
 
         return (
           <g key={c.qId}
@@ -490,39 +511,46 @@ function TeacherCommentLayer({ comments, questions, answers, filterId, draggable
               e.preventDefault();
             } : undefined}
           >
-            {/* Underline / check / cross symbol */}
-            {c.symbol === "✓" || c.style === "check" ? (
-              <text x={cx - 2} y={cy} fontSize="3.5" fill="#cc0000"
+            {/* Check / cross symbol */}
+            {(c.symbol === "✓" || c.style === "check") && (
+              <text x={cx - 2} y={cy} fontSize={fSize + 1} fill={fillColor}
                 fontFamily="Arial" fontWeight="bold" opacity={0.9}
                 style={{ filter: `url(#ink-blur-${filterId})` }}>✓</text>
-            ) : c.symbol === "✗" || c.style === "cross" ? (
-              <text x={cx - 2} y={cy} fontSize="3.5" fill="#cc0000"
+            )}
+            {(c.symbol === "✗" || c.style === "cross") && (
+              <text x={cx - 2} y={cy} fontSize={fSize + 1} fill={fillColor}
                 fontFamily="Arial" fontWeight="bold" opacity={0.9}
                 style={{ filter: `url(#ink-blur-${filterId})` }}>✗</text>
-            ) : null}
+            )}
 
-            {/* Circle around (for "circle" style) */}
+            {/* Circle around answer */}
             {c.style === "circle" && (
               <ellipse cx={cx + 5} cy={cy - 1} rx="6" ry="2.5"
-                fill="none" stroke="#cc0000" strokeWidth="0.4"
+                fill="none" stroke={fillColor} strokeWidth="0.4"
                 opacity={0.7} style={{ filter: `url(#ink-blur-${filterId})` }} />
             )}
 
-            {/* Arrow (pointing at answer) */}
+            {/* Arrow pointing at answer */}
             {c.style === "arrow" && (
               <line x1={cx} y1={cy - 1} x2={q.x + 3} y2={q.y + 1}
-                stroke="#cc0000" strokeWidth="0.35" strokeLinecap="round"
-                markerEnd="url(#arrowhead)" opacity={0.8} />
+                stroke={fillColor} strokeWidth="0.35" strokeLinecap="round"
+                markerEnd={`url(#arrowhead-${filterId})`} opacity={0.8} />
             )}
 
-            {/* Main comment text — red, slightly slanted, teacher handwriting */}
+            {/* Drag handle indicator (visible in edit mode) */}
+            {draggable && (
+              <circle cx={cx - 1.5} cy={cy - fSize * 0.4} r="0.6"
+                fill={fillColor} opacity={0.4} />
+            )}
+
+            {/* Main comment text */}
             {c.text && (
               <text
                 x={cx}
                 y={cy}
-                fontSize="2.4"
-                fill="#cc0000"
-                fontFamily="var(--font-homemade)"
+                fontSize={fSize}
+                fill={fillColor}
+                fontFamily={`var(${fFamily})`}
                 transform={`rotate(-1.5,${cx},${cy})`}
                 opacity={0.92}
                 style={{ filter: `url(#ink-blur-${filterId})` }}
@@ -796,14 +824,16 @@ function PageLayer({ page, pi, questions, answers, profile, variantSeed,
   onOffsetChange: (id: string, dx: number, dy: number) => void;
   effects: PageEffectOverrides;
   shapes: GeometryShape[]; comments: TeacherComment[];
-  onCommentDrag?: (qId: string, dx: number, dy: number) => void;
+  onCommentDrag?: (qId: string, svgDx: number, svgDy: number) => void;
   forPrint?: boolean;
 }) {
   const filterId = `p${pi}`;
   const pageQ = questions.filter(q => q.pageIndex === pi);
+  // Ref used to convert mouse pixel deltas → SVG coordinate units
+  const containerRef = useRef<HTMLDivElement>(null);
 
   return (
-    <div className="relative bg-white" style={{
+    <div ref={containerRef} className="relative bg-white" style={{
       width: "100%", aspectRatio: "210/297", overflow: "hidden",
       pageBreakAfter: forPrint ? "always" : "auto",
     }}>
@@ -818,7 +848,7 @@ function PageLayer({ page, pi, questions, answers, profile, variantSeed,
         viewBox="0 0 100 141.4" preserveAspectRatio="none">
         <PencilDefs id={filterId} />
         <defs>
-          <marker id="arrowhead" markerWidth="4" markerHeight="4" refX="2" refY="2" orient="auto">
+          <marker id={`arrowhead-${filterId}`} markerWidth="4" markerHeight="4" refX="2" refY="2" orient="auto">
             <path d="M0,0 L4,2 L0,4 Z" fill="#cc0000" />
           </marker>
         </defs>
@@ -834,13 +864,16 @@ function PageLayer({ page, pi, questions, answers, profile, variantSeed,
 
         {/* Teacher comments (red) */}
         {effects.showComments && (
-          <TeacherCommentLayer comments={comments.filter(c => questions.find(q => q.id === c.qId)?.pageIndex === pi)}
+          <TeacherCommentLayer
+            comments={comments.filter(c => questions.find(q => q.id === c.qId)?.pageIndex === pi)}
             questions={questions} answers={answers} filterId={filterId}
-            draggable={!forPrint && editMode} onDrag={onCommentDrag} />
+            draggable={!forPrint && editMode} onDrag={onCommentDrag}
+            svgContainerRef={containerRef}
+          />
         )}
       </svg>
 
-      {/* Text overlays */}
+      {/* Text overlays — answers in student handwriting */}
       {pageQ.map(q => {
         const ans = answers[q.id] ?? "";
         if (!ans) return null;
@@ -957,6 +990,14 @@ function GeometryBuilder({ pageIndex, onAdd }: {
 // ─────────────────────────────────────────────────────────────────────────────
 // TEACHER COMMENT MANAGER
 // ─────────────────────────────────────────────────────────────────────────────
+const TEACHER_COLORS = [
+  { label: "Rouge",   value: "#cc0000" },
+  { label: "Violet",  value: "#7c3aed" },
+  { label: "Vert",    value: "#15803d" },
+  { label: "Bleu",    value: "#1d4ed8" },
+  { label: "Orange",  value: "#c2410c" },
+];
+
 function CommentManager({ comments, questions, answers, onUpdate, onGenerate, isGenerating }: {
   comments: TeacherComment[];
   questions: DetectedQuestion[];
@@ -965,40 +1006,122 @@ function CommentManager({ comments, questions, answers, onUpdate, onGenerate, is
   onGenerate: () => void;
   isGenerating: boolean;
 }) {
+  // Global teacher style (applies to newly created comments + can update existing)
+  const [globalFont, setGlobalFont]     = useState(DEFAULT_TEACHER_FONT);
+  const [globalColor, setGlobalColor]   = useState(DEFAULT_TEACHER_COLOR);
+  const [globalFontSize, setGlobalFontSize] = useState(DEFAULT_TEACHER_FONTSIZE);
+
+  const makeNew = (qId: string): TeacherComment => ({
+    qId, text: "", position: "right", ox: 0, oy: 0,
+    teacherFontKey: globalFont, teacherColor: globalColor, teacherFontSize: globalFontSize,
+  });
+
   const updateComment = (qId: string, text: string) => {
     const existing = comments.find(c => c.qId === qId);
     if (existing) {
       onUpdate(comments.map(c => c.qId === qId ? { ...c, text } : c));
     } else {
-      onUpdate([...comments, { qId, text, position: "right", ox: 0, oy: 0 }]);
+      onUpdate([...comments, { ...makeNew(qId), text }]);
     }
   };
+
   const removeComment = (qId: string) => onUpdate(comments.filter(c => c.qId !== qId));
+
+  // Apply global style to all existing comments
+  const applyGlobalStyle = () => {
+    onUpdate(comments.map(c => ({
+      ...c,
+      teacherFontKey: globalFont,
+      teacherColor: globalColor,
+      teacherFontSize: globalFontSize,
+    })));
+  };
 
   return (
     <div className="space-y-2">
+      {/* Global teacher style */}
+      <div className="bg-red-50 border border-red-200 rounded-xl p-2.5 space-y-2">
+        <p className="text-[8px] font-black text-red-700 flex items-center gap-1">
+          <Settings className="h-3 w-3" /> STYLE DE L'ENSEIGNANT
+        </p>
+
+        {/* Font selector */}
+        <div>
+          <p className="text-[8px] font-black text-black/40 mb-1">POLICE :</p>
+          <div className="grid grid-cols-2 gap-1">
+            {HANDWRITING_FONTS.map(f => (
+              <button key={f.key} onClick={() => setGlobalFont(f.key)}
+                className={`px-1.5 py-1 text-[9px] border rounded-lg transition font-bold truncate ${globalFont === f.key ? "border-red-500 bg-red-100 text-red-700" : "border-black/10 hover:border-red-300"}`}
+                style={{ fontFamily: f.family, color: globalColor }}>
+                {f.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Color selector */}
+        <div>
+          <p className="text-[8px] font-black text-black/40 mb-1">COULEUR :</p>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {TEACHER_COLORS.map(tc => (
+              <button key={tc.value} title={tc.label} onClick={() => setGlobalColor(tc.value)}
+                className={`w-5 h-5 rounded-full border-2 transition ${globalColor === tc.value ? "border-black scale-110" : "border-transparent hover:border-black"}`}
+                style={{ background: tc.value }} />
+            ))}
+            <label className="w-5 h-5 rounded-full border-2 border-black cursor-pointer relative overflow-hidden" title="Couleur personnalisée">
+              <input type="color" value={globalColor} onChange={e => setGlobalColor(e.target.value)}
+                className="absolute inset-0 opacity-0 w-full h-full cursor-pointer" />
+              <div className="w-full h-full rounded-full" style={{ background: globalColor }} />
+            </label>
+          </div>
+        </div>
+
+        {/* Font size */}
+        <div className="flex items-center gap-2">
+          <span className="text-[8px] font-black text-black/40 shrink-0">TAILLE :</span>
+          <input type="range" min={1.5} max={4.5} step={0.1} value={globalFontSize}
+            onChange={e => setGlobalFontSize(parseFloat(e.target.value))}
+            className="flex-1 accent-red-500 h-1.5" />
+          <span className="text-[9px] font-black w-6 text-right" style={{ color: globalColor }}>{globalFontSize.toFixed(1)}</span>
+        </div>
+
+        {/* Apply to all button */}
+        {comments.length > 0 && (
+          <button onClick={applyGlobalStyle}
+            className="w-full py-1 bg-red-500 text-white border border-red-600 rounded-lg text-[9px] font-black hover:bg-red-600 transition">
+            ✓ Appliquer à tous les commentaires
+          </button>
+        )}
+      </div>
+
+      {/* Generate with Gemini */}
       <button onClick={onGenerate} disabled={isGenerating || !Object.keys(answers).length}
         className="w-full py-2 bg-red-500 text-white border-2 border-black rounded-xl font-black text-xs flex items-center justify-center gap-1.5 disabled:opacity-50 hover:bg-red-600 transition">
         {isGenerating ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
         Générer corrections (Gemini)
       </button>
-      <div className="space-y-1.5 max-h-60 overflow-y-auto">
+
+      {/* Per-question comments */}
+      <div className="space-y-1.5 max-h-52 overflow-y-auto">
         {questions.filter(q => answers[q.id]).map(q => {
           const c = comments.find(c => c.qId === q.id);
           return (
-            <div key={q.id} className="space-y-0.5">
+            <div key={q.id} className="space-y-0.5 p-1.5 bg-red-50/50 rounded-lg border border-red-100">
               <label className="text-[8px] font-black text-black/40 block truncate">{q.text.substring(0, 40)}…</label>
               <div className="flex gap-1">
                 <input
                   value={c?.text ?? ""}
                   onChange={e => updateComment(q.id, e.target.value)}
-                  placeholder="Commentaire en rouge…"
+                  placeholder="Commentaire…"
                   className="flex-1 border border-red-200 rounded-lg px-2 py-1 text-[10px] focus:outline-none focus:border-red-500 font-bold"
-                  style={{ color: "#cc0000" }}
+                  style={{
+                    color: c?.teacherColor || globalColor,
+                    fontFamily: getFontFamily(c?.teacherFontKey || globalFont),
+                  }}
                 />
                 <select value={c?.position ?? "right"} onChange={e => {
-                  if (c) onUpdate(comments.map(cc => cc.qId === q.id ? { ...cc, position: e.target.value as any } : cc));
-                  else updateComment(q.id, "");
+                  if (c) onUpdate(comments.map(cc => cc.qId === q.id ? { ...cc, position: e.target.value as TeacherComment["position"] } : cc));
+                  else onUpdate([...comments, { ...makeNew(q.id), position: e.target.value as TeacherComment["position"] }]);
                 }} className="border border-black/10 rounded text-[8px] px-0.5 w-14">
                   <option value="right">→ Droite</option>
                   <option value="above">↑ Haut</option>
@@ -1012,6 +1135,22 @@ function CommentManager({ comments, questions, answers, onUpdate, onGenerate, is
                   </button>
                 )}
               </div>
+              {/* Per-comment style override */}
+              {c && (
+                <div className="flex items-center gap-1 pt-0.5">
+                  <span className="text-[7px] font-black text-black/30">Style :</span>
+                  <select value={c.teacherFontKey || globalFont}
+                    onChange={e => onUpdate(comments.map(cc => cc.qId === q.id ? { ...cc, teacherFontKey: e.target.value } : cc))}
+                    className="border border-black/10 rounded text-[7px] px-0.5 flex-1">
+                    {HANDWRITING_FONTS.map(f => (
+                      <option key={f.key} value={f.key}>{f.label}</option>
+                    ))}
+                  </select>
+                  <input type="color" value={c.teacherColor || globalColor}
+                    onChange={e => onUpdate(comments.map(cc => cc.qId === q.id ? { ...cc, teacherColor: e.target.value } : cc))}
+                    className="w-5 h-5 rounded cursor-pointer border-0 p-0" title="Couleur" />
+                </div>
+              )}
             </div>
           );
         })}
@@ -1274,6 +1413,9 @@ export default function App() {
         const newComments: TeacherComment[] = Object.entries(d.comments).map(([qId, c]: [string, any]) => ({
           qId, text: c.text || "", symbol: c.symbol, position: c.position || "right",
           style: c.style, ox: 0, oy: 0,
+          teacherFontKey: DEFAULT_TEACHER_FONT,
+          teacherColor: DEFAULT_TEACHER_COLOR,
+          teacherFontSize: DEFAULT_TEACHER_FONTSIZE,
         }));
         setComments(newComments);
         setEffects(prev => ({ ...prev, showComments: true }));
@@ -1286,11 +1428,139 @@ export default function App() {
     setOffsets(prev => ({ ...prev, [id]: { x: (prev[id]?.x || 0) + dx, y: (prev[id]?.y || 0) + dy } }));
   }, []);
 
-  const handleCommentDrag = useCallback((qId: string, dx: number, dy: number) => {
-    setComments(prev => prev.map(c => c.qId === qId ? { ...c, ox: c.ox + dx, oy: c.oy + dy } : c));
+  // dx/dy are already in SVG coordinate units (converted in TeacherCommentLayer)
+  const handleCommentDrag = useCallback((qId: string, svgDx: number, svgDy: number) => {
+    setComments(prev => prev.map(c => c.qId === qId ? { ...c, ox: c.ox + svgDx, oy: c.oy + svgDy } : c));
   }, []);
 
-  const displayPages: EvalPage[] = usePreloaded ? [{ base64: "", pageNum: 1 }] : evalPages;
+  /**
+   * Print all pages using window.open() — avoids display:none rendering bug.
+   * Builds a complete standalone HTML document with:
+   *  - All CSS variables (fonts) inlined
+   *  - All page images as base64 <img>
+   *  - All answers rendered as absolutely-positioned divs
+   *  - Teacher comments as inline SVG overlays
+   *  - All realism effects via SVG
+   */
+  const printAllPages = useCallback(() => {
+    const pagesToPrint = displayPages.length > 0 ? displayPages : [{ base64: "", pageNum: 1 }];
+
+    // Collect all Google Fonts used
+    const fontLinks = [
+      "https://fonts.googleapis.com/css2?family=Homemade+Apple&family=Marck+Script&family=Parisienne&family=Allura&family=La+Belle+Aurore&family=Bad+Script&display=swap"
+    ];
+
+    // Build SVG comment elements for a page
+    const buildCommentsSVG = (pageIndex: number) => {
+      const pageComments = comments.filter(c => {
+        const q = questions.find(qq => qq.id === c.qId);
+        return q && q.pageIndex === pageIndex && answers[c.qId];
+      });
+      if (!pageComments.length) return "";
+
+      return pageComments.map(c => {
+        const q = questions.find(qq => qq.id === c.qId);
+        if (!q) return "";
+        let bx = q.x, by = q.y;
+        if (c.position === "right")  { bx = q.x + (q.maxWidth ?? 78) + 2; by = q.y + 1; }
+        if (c.position === "above")  { bx = q.x; by = Math.max(1, q.y - 4); }
+        if (c.position === "below")  { bx = q.x; by = q.y + 6; }
+        if (c.position === "margin") { bx = 1; by = q.y + 1; }
+        const cx = bx + c.ox;
+        const cy = by + c.oy;
+        const fillColor = c.teacherColor || "#cc0000";
+        const fSize = c.teacherFontSize || 2.4;
+        const fFamily = getFontFamily(c.teacherFontKey || "homemade-apple");
+        let sym = "";
+        if (c.symbol === "✓" || c.style === "check") sym = `<text x="${cx - 2}" y="${cy}" font-size="${fSize + 1}" fill="${fillColor}" font-family="Arial" font-weight="bold" opacity="0.9">✓</text>`;
+        if (c.symbol === "✗" || c.style === "cross") sym = `<text x="${cx - 2}" y="${cy}" font-size="${fSize + 1}" fill="${fillColor}" font-family="Arial" font-weight="bold" opacity="0.9">✗</text>`;
+        const txt = c.text ? `<text x="${cx}" y="${cy}" font-size="${fSize}" fill="${fillColor}" font-family="${fFamily}" transform="rotate(-1.5,${cx},${cy})" opacity="0.92">${c.text.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}</text>` : "";
+        return sym + txt;
+      }).join("\n");
+    };
+
+    // Build answer div HTML for a page
+    const buildAnswersHTML = (pageIndex: number) => {
+      const pageQ = questions.filter(q => q.pageIndex === pageIndex);
+      return pageQ.map(q => {
+        const ans = answers[q.id] ?? "";
+        if (!ans) return "";
+        const off = offsets[q.id] ?? { x: 0, y: 0 };
+        const fp = activeProfile.fingerprint;
+        const useFP = !!fp && (fp.confidenceScore ?? 0) >= 55;
+        const fontSize = useFP ? Math.max(11, fp.suggestedSize) : Math.max(11, activeProfile.fontSize);
+        const inkCol = activeProfile.inkColor;
+        const fontFamily = getFontFamily(activeProfile.fontKey);
+        const tx = off.x;
+        const ty = off.y;
+        // Simple text rendering for print (no per-letter deformation, but correct font/color)
+        const lines = ans.split("\n");
+        const lineHTML = lines.map(line =>
+          `<div style="margin:0;padding:0;line-height:${fontSize * 1.6}px">${line || "&nbsp;"}</div>`
+        ).join("");
+        return `<div style="position:absolute;left:${q.x}%;top:${q.y}%;transform:translate(${tx}px,${ty}px);max-width:${q.maxWidth ?? 78}%;font-family:'${fontFamily}',cursive;font-size:${fontSize}px;color:${inkCol};pointer-events:none;z-index:5">${lineHTML}</div>`;
+      }).join("\n");
+    };
+
+    // Build a page HTML block
+    const buildPageHTML = (page: EvalPage, pageIndex: number) => {
+      const commentsSVG = effects.showComments ? buildCommentsSVG(pageIndex) : "";
+      const answersHTML = buildAnswersHTML(pageIndex);
+      const imgHTML = page.base64
+        ? `<img src="${page.base64}" style="position:absolute;inset:0;width:100%;height:100%;object-fit:fill" />`
+        : "";
+      return `
+      <div style="position:relative;width:210mm;height:297mm;overflow:hidden;background:white;page-break-after:always;box-sizing:border-box">
+        ${imgHTML}
+        <svg style="position:absolute;inset:0;width:100%;height:100%;overflow:visible" viewBox="0 0 100 141.4" preserveAspectRatio="none">
+          ${commentsSVG}
+        </svg>
+        ${answersHTML}
+      </div>`;
+    };
+
+    const pagesHTML = pagesToPrint.map((page, i) => buildPageHTML(page, i)).join("\n");
+
+    const printHTML = `<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8"/>
+  <title>nanobanana — ${activeProfile.name}</title>
+  ${fontLinks.map(l => `<link rel="stylesheet" href="${l}">`).join("\n  ")}
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { background: white; }
+    @page { margin: 0; size: A4 portrait; }
+    @media print {
+      html, body { width: 210mm; }
+    }
+  </style>
+</head>
+<body>
+${pagesHTML}
+<script>
+  // Wait for fonts to load before printing
+  document.fonts.ready.then(function() {
+    // Additional delay to ensure images are rendered
+    setTimeout(function() { window.print(); }, 400);
+  });
+<\/script>
+</body>
+</html>`;
+
+    const printWin = window.open("", "_blank", "width=900,height=700");
+    if (!printWin) {
+      alert("Veuillez autoriser les pop-ups pour imprimer.");
+      return;
+    }
+    printWin.document.open();
+    printWin.document.write(printHTML);
+    printWin.document.close();
+  }, [displayPages, questions, answers, comments, effects, activeProfile, offsets]);
+
+  // Always use real evalPages — usePreloaded just means no base64 page image (template mode)
+  // We never lose the actual page images by using evalPages directly
+  const displayPages: EvalPage[] = evalPages.length > 0 ? evalPages : (usePreloaded ? [{ base64: "", pageNum: 1 }] : []);
   const upd = <K extends keyof StudentProfile>(k: K, v: StudentProfile[K]) =>
     setActiveProfile(prev => ({ ...prev, [k]: v }));
 
@@ -1300,36 +1570,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-zinc-100 flex flex-col antialiased">
 
-      {/* Print styles */}
-      <style>{`
-        @media print {
-          body > *:not(#print-root) { display: none !important; }
-          #print-root { display: block !important; }
-          #print-root .page-wrap {
-            width: 210mm; min-height: 297mm; page-break-after: always;
-            position: relative; overflow: hidden; background: white;
-          }
-          #print-root .page-wrap:last-child { page-break-after: auto; }
-          @page { margin: 0; size: A4 portrait; }
-        }
-        #print-root { display: none; }
-      `}</style>
-
-      {/* ── Print root (all pages, shown only on print) ── */}
-      <div id="print-root">
-        {displayPages.map((page, i) => (
-          <div key={i} className="page-wrap">
-            <PageLayer
-              page={page} pi={i}
-              questions={questions} answers={answers}
-              profile={activeProfile} variantSeed={variantSeed}
-              editMode={false} offsets={offsets} onOffsetChange={() => {}}
-              effects={effects} shapes={shapes} comments={comments}
-              forPrint
-            />
-          </div>
-        ))}
-      </div>
+      {/* No print-root needed — we use window.open() approach instead */}
 
       {/* ── Header ── */}
       <header className="bg-white border-b-4 border-black px-5 py-3 flex flex-wrap justify-between items-center sticky top-0 z-50 shadow-[0_4px_0_0_rgba(0,0,0,1)]">
@@ -1716,7 +1957,7 @@ export default function App() {
                   </button>
                   <button onClick={() => setStep("print")}
                     className="flex items-center gap-1.5 px-4 py-2 bg-black text-yellow-400 border-2 border-black rounded-xl font-black text-xs shadow-[2px_2px_0_rgba(0,0,0,1)] hover:translate-y-px hover:shadow-none transition">
-                    <Printer className="h-3.5 w-3.5" /> Imprimer tout
+                    <Printer className="h-3.5 w-3.5" /> Préparer impression
                   </button>
                 </div>
               </div>
@@ -1921,7 +2162,7 @@ export default function App() {
                   {comments.length > 0 && <p className="text-xs text-green-600">✓ {comments.length} correction(s) de l'enseignant en rouge</p>}
                 </div>
 
-                <button onClick={() => window.print()}
+                <button onClick={printAllPages}
                   className="w-full py-5 bg-black text-yellow-400 border-4 border-black rounded-2xl font-black text-xl shadow-[6px_6px_0_rgba(250,204,21,1)] hover:translate-y-0.5 hover:shadow-[3px_3px_0_rgba(250,204,21,1)] transition flex items-center justify-center gap-3">
                   <Printer className="h-6 w-6" /> IMPRIMER TOUTES LES PAGES
                 </button>
