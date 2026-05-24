@@ -1,56 +1,72 @@
-import { Type } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { withKeyRotation, hasKeys } from "./_gemini";
 
-/**
- * Deep handwriting analysis result — fed directly into HandwrittenText renderer
- */
+// ── Inline key rotation (Vercel cannot import from sibling api/ files) ────────
+function getGeminiKeys(): string[] {
+  const keys: string[] = [];
+  for (const name of ["GEMINI_API_KEY_1","GEMINI_API_KEY_2","GEMINI_API_KEY_3","GEMINI_API_KEY_4","GEMINI_API_KEY","GEMINI_KEY"]) {
+    const v = process.env[name];
+    if (v && v !== "MY_GEMINI_API_KEY" && v.length > 10) keys.push(v);
+  }
+  return [...new Set(keys)];
+}
+function isQuota(err: any): boolean {
+  const msg = String(err?.message || err?.status || err || "").toLowerCase();
+  return msg.includes("429") || msg.includes("quota") || msg.includes("resource_exhausted") || msg.includes("rate limit") || err?.status === 429;
+}
+async function withKeys<T>(fn: (ai: GoogleGenAI) => Promise<T>): Promise<T> {
+  const keys = getGeminiKeys();
+  if (!keys.length) throw new Error("Aucune clé Gemini configurée.");
+  let last: any;
+  for (let i = 0; i < keys.length; i++) {
+    try {
+      return await fn(new GoogleGenAI({ apiKey: keys[i], httpOptions: { headers: { "User-Agent": "aistudio-build" } } }));
+    } catch (e: any) {
+      if (isQuota(e)) { console.warn(`Gemini key #${i+1} quota → next`); last = e; continue; }
+      throw e;
+    }
+  }
+  throw new Error(`All Gemini keys exhausted. Last: ${last?.message}`);
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 const FALLBACK_STYLE = {
-  // ── Font selection
   suggestedFont: "Homemade Apple",
   suggestedColor: "blue",
-
-  // ── Sizing & spacing
-  suggestedSize: 18,           // base font-size px
-  letterSpacingEm: -0.02,     // em — negative = cramped, positive = airy
-  wordSpacingPx: 6,            // px between words
-  lineHeightMultiplier: 1.55, // relative to font-size
-
-  // ── Geometry
-  suggestedRotation: -1.5,    // global slant in degrees (negative = leans right)
-  baselineWobbleAmp: 1.8,     // px — how much each word deviates vertically
-  baselineWobbleFreq: 2.1,    // sin frequency factor
-  letterRotVariance: 4.5,     // ° — random rotation per letter
-  letterYVariance: 1.8,       // px — vertical jitter per letter
-  letterXVariance: 0.5,       // px — horizontal jitter per letter
-
-  // ── Stroke & ink
-  penThickness: 1.4,          // stroke weight multiplier
-  inkOpacityMin: 0.72,        // min opacity (light pressure)
-  inkOpacityMax: 1.0,         // max opacity (heavy pressure)
-  inkDrySkipRate: 0.04,       // fraction of letters that look "faded"
-  inkBleedRadius: 0.15,       // blur radius for ink spread (px in SVG units)
-
-  // ── Letter-level deformations
-  messinessIntensity: 2.5,    // 0–6 overall sloppiness
-  letterSizeVariance: 0.8,    // how much letters vary in size (px)
-  letterCaseChaos: true,      // occasional wrong capitalisation
+  suggestedSize: 18,
+  letterSpacingEm: -0.02,
+  wordSpacingPx: 6,
+  lineHeightMultiplier: 1.55,
+  suggestedRotation: -1.5,
+  baselineWobbleAmp: 1.8,
+  baselineWobbleFreq: 2.1,
+  letterRotVariance: 4.5,
+  letterYVariance: 1.8,
+  letterXVariance: 0.5,
+  penThickness: 1.4,
+  inkOpacityMin: 0.72,
+  inkOpacityMax: 1.0,
+  inkDrySkipRate: 0.04,
+  inkBleedRadius: 0.15,
+  messinessIntensity: 2.5,
+  letterSizeVariance: 0.8,
+  letterCaseChaos: true,
   enableUnreadableLetters: false,
-
-  // ── Style tags extracted from the image
   analysisDescription: "Style écolier classique appliqué par défaut.",
   confidenceScore: 40,
-
-  // ── Ratures / realism presets inferred from sample
   inferredRaturesRate: 0.03,
   inferredBlancoRate: 0.01,
-  inferredSmudgeFreq: 0.25,   // 0–1, how often smudges appear
-
-  // ── Per-letter shape fingerprint (16 values 0–1, used as seed offsets)
+  inferredSmudgeFreq: 0.25,
   letterShapeFingerprint: [0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5],
 };
 
 export type HandwritingStyle = typeof FALLBACK_STYLE;
+
+function clamp(v: any, min: number, max: number, fallback: number): number {
+  const n = Number(v);
+  if (isNaN(n)) return fallback;
+  return Math.max(min, Math.min(max, n));
+}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -65,13 +81,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json({ success: true, handwritingStyle: FALLBACK_STYLE });
   }
 
-  if (!hasKeys()) return res.status(200).json({ success: true, handwritingStyle: FALLBACK_STYLE });
+  if (!getGeminiKeys().length) {
+    return res.status(200).json({ success: true, handwritingStyle: FALLBACK_STYLE });
+  }
 
   try {
     const b64 = String(handwritingImage).split("base64,")[1];
     const mime = (String(handwritingImage).split(";")[0].split(":")[1] || "image/png") as any;
 
-    const rawText = await withKeyRotation(async (ai) => {
+    const rawText = await withKeys(async (ai) => {
       const response = await ai.models.generateContent({
         model: "gemini-2.5-flash",
         contents: [
@@ -80,56 +98,34 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             text:
               `Tu es un expert en analyse graphologique. Analyse très précisément l'écriture manuscrite de "${studentName || "cet élève"}" dans cette image.\n\n` +
               `Extrais TOUS les paramètres suivants avec la plus grande précision possible :\n\n` +
-
-              `== POLICE ==\n` +
-              `suggestedFont: OBLIGATOIREMENT l'une de ces options EXACTES: "Homemade Apple", "Marck Script", "Parisienne", "Allura", "La Belle Aurore", "Bad Script"\n` +
-              `Choisis celle dont le style se rapproche le plus de l'écriture visible.\n\n` +
-
-              `== COULEUR ==\n` +
-              `suggestedColor: couleur d'encre observée (ex: "blue", "black", "red", "green", "#1d3278")\n\n` +
-
-              `== TAILLE ET ESPACEMENT ==\n` +
-              `suggestedSize: taille de police en px (entre 12 et 26, basé sur la hauteur relative des lettres)\n` +
-              `letterSpacingEm: espacement inter-lettre en em (entre -0.05 et 0.15)\n` +
-              `wordSpacingPx: espacement entre mots en px (entre 3 et 15)\n` +
-              `lineHeightMultiplier: interligne relatif à la taille (entre 1.3 et 2.0)\n\n` +
-
-              `== GÉOMÉTRIE ET INCLINAISON ==\n` +
-              `suggestedRotation: inclinaison globale en degrés (−8 = très penchée droite, 0 = vertical, +4 = penche gauche)\n` +
-              `baselineWobbleAmp: amplitude de tremblement de ligne en px (0 = parfait, 4 = très tremblant)\n` +
-              `baselineWobbleFreq: fréquence du tremblement (entre 1.0 et 4.0)\n` +
-              `letterRotVariance: variance de rotation par lettre en degrés (0 = uniforme, 8 = très irrégulier)\n` +
-              `letterYVariance: variance verticale par lettre en px (0–3)\n` +
-              `letterXVariance: variance horizontale par lettre en px (0–1.5)\n\n` +
-
-              `== ENCRE ET PRESSION ==\n` +
-              `penThickness: épaisseur du trait (0.8 = fin comme gel, 2.5 = épais comme feutre)\n` +
-              `inkOpacityMin: opacité minimale (pression légère), entre 0.5 et 0.95\n` +
-              `inkOpacityMax: opacité maximale (pression forte), entre 0.85 et 1.0\n` +
-              `inkDrySkipRate: taux de lettres à l'encre "sèche"/pâle (entre 0.0 et 0.12)\n` +
-              `inkBleedRadius: rayon de bavure d'encre (0.0 = propre, 0.3 = beaucoup de bavures)\n\n` +
-
-              `== DÉSORDRE GLOBAL ==\n` +
-              `messinessIntensity: intensité globale du désordre (0 = parfait, 6 = très bâclé)\n` +
-              `letterSizeVariance: variation de taille par lettre en px (0.0 = uniforme, 2.5 = très variable)\n` +
-              `letterCaseChaos: true si certaines lettres ont une casse incorrecte (majuscule/minuscule mélangée)\n` +
-              `enableUnreadableLetters: true si certaines lettres sont vraiment illisibles\n\n` +
-
-              `== RÉALISME INFÉRÉ ==\n` +
-              `inferredRaturesRate: fréquence de ratures/corrections dans l'écriture (0.0–0.15)\n` +
-              `inferredBlancoRate: fréquence d'utilisation de correcteur blanc (0.0–0.08)\n` +
-              `inferredSmudgeFreq: fréquence de bavures/taches (0.0–0.8)\n\n` +
-
-              `== EMPREINTE FORME ==\n` +
-              `letterShapeFingerprint: tableau de 16 nombres entre 0.0 et 1.0 représentant l'empreinte unique de cette écriture.\n` +
-              `Ces valeurs seront utilisées comme seed de déformation. Varies-les selon les caractéristiques observées:\n` +
-              `[inclinaison_a, inclinaison_e, hauteur_t, boucle_l, pression_finale_mot, uniformite_o, taille_majuscule, espace_inter_mot, tremblement_h, jonction_lettres, fermeture_boucles, lignes_obliques, dechirement_papier, contact_baseline, progression_haut, regularite_globale]\n\n` +
-
-              `== DESCRIPTION ==\n` +
-              `analysisDescription: description graphologique en français (max 120 chars)\n` +
-              `confidenceScore: confiance de l'analyse entre 0 et 100\n\n` +
-
-              `Réponds UNIQUEMENT avec un JSON valide, aucun autre texte.`,
+              `suggestedFont: OBLIGATOIREMENT l'une de: "Homemade Apple", "Marck Script", "Parisienne", "Allura", "La Belle Aurore", "Bad Script"\n` +
+              `suggestedColor: couleur d'encre (ex: "blue", "black", "red", "#1d3278")\n` +
+              `suggestedSize: taille px (12-26)\n` +
+              `letterSpacingEm: espacement inter-lettre em (-0.05 à 0.15)\n` +
+              `wordSpacingPx: espacement mots px (3-15)\n` +
+              `lineHeightMultiplier: interligne (1.3-2.0)\n` +
+              `suggestedRotation: inclinaison degrés (-8 à +4)\n` +
+              `baselineWobbleAmp: tremblement ligne px (0-4)\n` +
+              `baselineWobbleFreq: fréquence tremblement (1.0-4.0)\n` +
+              `letterRotVariance: variance rotation lettre degrés (0-8)\n` +
+              `letterYVariance: variance verticale lettre px (0-3)\n` +
+              `letterXVariance: variance horizontale lettre px (0-1.5)\n` +
+              `penThickness: épaisseur trait (0.8-2.5)\n` +
+              `inkOpacityMin: opacité min (0.5-0.95)\n` +
+              `inkOpacityMax: opacité max (0.85-1.0)\n` +
+              `inkDrySkipRate: taux encre sèche (0.0-0.12)\n` +
+              `inkBleedRadius: bavure encre (0.0-0.3)\n` +
+              `messinessIntensity: désordre global (0-6)\n` +
+              `letterSizeVariance: variation taille lettre px (0.0-2.5)\n` +
+              `letterCaseChaos: boolean - casse incorrecte\n` +
+              `enableUnreadableLetters: boolean - lettres illisibles\n` +
+              `inferredRaturesRate: fréquence ratures (0.0-0.15)\n` +
+              `inferredBlancoRate: fréquence blanco (0.0-0.08)\n` +
+              `inferredSmudgeFreq: fréquence bavures (0.0-0.8)\n` +
+              `letterShapeFingerprint: tableau 16 nombres (0.0-1.0)\n` +
+              `analysisDescription: description graphologique français (max 120 chars)\n` +
+              `confidenceScore: confiance analyse (0-100)\n\n` +
+              `Réponds UNIQUEMENT avec un JSON valide.`,
           },
         ],
         config: {
@@ -161,23 +157,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               inferredRaturesRate:     { type: Type.NUMBER },
               inferredBlancoRate:      { type: Type.NUMBER },
               inferredSmudgeFreq:      { type: Type.NUMBER },
-              letterShapeFingerprint: {
-                type: Type.ARRAY,
-                items: { type: Type.NUMBER },
-              },
+              letterShapeFingerprint:  { type: Type.ARRAY, items: { type: Type.NUMBER } },
               analysisDescription:     { type: Type.STRING },
               confidenceScore:         { type: Type.NUMBER },
             },
             required: [
-              "suggestedFont", "suggestedColor", "suggestedSize", "letterSpacingEm",
-              "wordSpacingPx", "lineHeightMultiplier", "suggestedRotation",
-              "baselineWobbleAmp", "baselineWobbleFreq", "letterRotVariance",
-              "letterYVariance", "letterXVariance", "penThickness",
-              "inkOpacityMin", "inkOpacityMax", "inkDrySkipRate", "inkBleedRadius",
-              "messinessIntensity", "letterSizeVariance", "letterCaseChaos",
-              "enableUnreadableLetters", "inferredRaturesRate", "inferredBlancoRate",
-              "inferredSmudgeFreq", "letterShapeFingerprint",
-              "analysisDescription", "confidenceScore",
+              "suggestedFont","suggestedColor","suggestedSize","letterSpacingEm",
+              "wordSpacingPx","lineHeightMultiplier","suggestedRotation",
+              "baselineWobbleAmp","baselineWobbleFreq","letterRotVariance",
+              "letterYVariance","letterXVariance","penThickness",
+              "inkOpacityMin","inkOpacityMax","inkDrySkipRate","inkBleedRadius",
+              "messinessIntensity","letterSizeVariance","letterCaseChaos",
+              "enableUnreadableLetters","inferredRaturesRate","inferredBlancoRate",
+              "inferredSmudgeFreq","letterShapeFingerprint","analysisDescription","confidenceScore",
             ],
           },
         },
@@ -193,7 +185,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       } catch { /* keep fallback */ }
     }
 
-    // Clamp & sanitise all values to prevent rendering glitches
     const style: HandwritingStyle = {
       suggestedFont: parsed.suggestedFont || FALLBACK_STYLE.suggestedFont,
       suggestedColor: parsed.suggestedColor || FALLBACK_STYLE.suggestedColor,
@@ -231,10 +222,4 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.error("analyze-handwriting:", err.message);
     return res.status(200).json({ success: true, handwritingStyle: FALLBACK_STYLE });
   }
-}
-
-function clamp(v: any, min: number, max: number, fallback: number): number {
-  const n = Number(v);
-  if (isNaN(n)) return fallback;
-  return Math.max(min, Math.min(max, n));
 }

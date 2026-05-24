@@ -1,6 +1,34 @@
-import { Type } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { withKeyRotation, hasKeys } from "./_gemini";
+
+// ── Inline key rotation (Vercel cannot import from sibling api/ files) ────────
+function getGeminiKeys(): string[] {
+  const keys: string[] = [];
+  for (const name of ["GEMINI_API_KEY_1","GEMINI_API_KEY_2","GEMINI_API_KEY_3","GEMINI_API_KEY_4","GEMINI_API_KEY","GEMINI_KEY"]) {
+    const v = process.env[name];
+    if (v && v !== "MY_GEMINI_API_KEY" && v.length > 10) keys.push(v);
+  }
+  return [...new Set(keys)];
+}
+function isQuota(err: any): boolean {
+  const msg = String(err?.message || err?.status || err || "").toLowerCase();
+  return msg.includes("429") || msg.includes("quota") || msg.includes("resource_exhausted") || msg.includes("rate limit") || err?.status === 429;
+}
+async function withKeys<T>(fn: (ai: GoogleGenAI) => Promise<T>): Promise<T> {
+  const keys = getGeminiKeys();
+  if (!keys.length) throw new Error("Aucune clé Gemini configurée.");
+  let last: any;
+  for (let i = 0; i < keys.length; i++) {
+    try {
+      return await fn(new GoogleGenAI({ apiKey: keys[i], httpOptions: { headers: { "User-Agent": "aistudio-build" } } }));
+    } catch (e: any) {
+      if (isQuota(e)) { console.warn(`Gemini key #${i+1} quota → next`); last = e; continue; }
+      throw e;
+    }
+  }
+  throw new Error(`All Gemini keys exhausted. Last: ${last?.message}`);
+}
+// ─────────────────────────────────────────────────────────────────────────────
 
 function clamp(v: number, min: number, max: number, def: number) {
   const n = Number(v);
@@ -20,7 +48,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ success: false, error: "Pages manquantes." });
   }
 
-  if (!hasKeys()) {
+  const keys = getGeminiKeys();
+  if (!keys.length) {
     return res.status(200).json({
       success: true,
       isDemo: true,
@@ -57,7 +86,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         `Ignorer titres/objectifs/critères. Max 20 questions. JSON: {"questions":[...]}`,
     });
 
-    const rawText = await withKeyRotation(async (ai) => {
+    const rawText = await withKeys(async (ai) => {
       const response = await ai.models.generateContent({
         model: "gemini-2.5-flash",
         contents: parts,
@@ -92,7 +121,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     let parsed: any;
     try { parsed = JSON.parse(rawText.trim()); }
-    catch { const m = rawText.match(/\{[\s\S]*\}/); if (!m) return res.status(500).json({ success: false, error: "JSON invalide." }); parsed = JSON.parse(m[0]); }
+    catch {
+      const m = rawText.match(/\{[\s\S]*\}/);
+      if (!m) return res.status(500).json({ success: false, error: "JSON invalide." });
+      parsed = JSON.parse(m[0]);
+    }
 
     const raw = Array.isArray(parsed?.questions) ? parsed.questions : [];
     const questions = raw

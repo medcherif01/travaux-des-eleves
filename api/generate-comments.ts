@@ -1,17 +1,43 @@
 /**
- * /api/generate-comments — Generates teacher correction comments in red
- * for each student answer. Comments are realistic, grade-level appropriate,
- * written in the style of a French teacher marking student work.
+ * /api/generate-comments — Generates teacher correction comments
  */
-import { Type } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { withKeyRotation, hasKeys } from "./_gemini";
+
+// ── Inline key rotation (Vercel cannot import from sibling api/ files) ────────
+function getGeminiKeys(): string[] {
+  const keys: string[] = [];
+  for (const name of ["GEMINI_API_KEY_1","GEMINI_API_KEY_2","GEMINI_API_KEY_3","GEMINI_API_KEY_4","GEMINI_API_KEY","GEMINI_KEY"]) {
+    const v = process.env[name];
+    if (v && v !== "MY_GEMINI_API_KEY" && v.length > 10) keys.push(v);
+  }
+  return [...new Set(keys)];
+}
+function isQuota(err: any): boolean {
+  const msg = String(err?.message || err?.status || err || "").toLowerCase();
+  return msg.includes("429") || msg.includes("quota") || msg.includes("resource_exhausted") || msg.includes("rate limit") || err?.status === 429;
+}
+async function withKeys<T>(fn: (ai: GoogleGenAI) => Promise<T>): Promise<T> {
+  const keys = getGeminiKeys();
+  if (!keys.length) throw new Error("Aucune clé Gemini configurée.");
+  let last: any;
+  for (let i = 0; i < keys.length; i++) {
+    try {
+      return await fn(new GoogleGenAI({ apiKey: keys[i], httpOptions: { headers: { "User-Agent": "aistudio-build" } } }));
+    } catch (e: any) {
+      if (isQuota(e)) { console.warn(`Gemini key #${i+1} quota → next`); last = e; continue; }
+      throw e;
+    }
+  }
+  throw new Error(`All Gemini keys exhausted. Last: ${last?.message}`);
+}
+// ─────────────────────────────────────────────────────────────────────────────
 
 const TEACHER_STYLE: Record<string, string> = {
-  "1-2": "Professeur sévère, beaucoup d'erreurs à corriger. Commentaires courts et directs : 'Faux!', 'Incomplet', 'À revoir', 'Manque de détails', 'Erreur de calcul', éventuellement un point d'interrogation ou un signe X.",
-  "3-4": "Professeur normal. Quelques corrections : 'Peut mieux faire', 'Incomplet', 'Bien mais...', 'Revoir la formule', parfois une accolade ou flèche.",
-  "5-6": "Professeur bienveillant. Commentaires positifs avec quelques remarques : 'Bien!', 'Correct', 'Bonne approche', 'Ajouter les unités', étoile ou coche.",
-  "7-8": "Professeur très satisfait. Commentaires élogieux : 'Excellent!', 'Parfait', 'Très bien développé', 'Bravo', étoile ou double coche.",
+  "1-2": "Professeur sévère: 'Faux!', 'Incomplet', 'À revoir', 'Manque de détails', 'Erreur de calcul', X.",
+  "3-4": "Professeur normal: 'Peut mieux faire', 'Incomplet', 'Bien mais...', 'Revoir la formule'.",
+  "5-6": "Professeur bienveillant: 'Bien!', 'Correct', 'Bonne approche', 'Ajouter les unités', ✓.",
+  "7-8": "Professeur très satisfait: 'Excellent!', 'Parfait', 'Très bien développé', 'Bravo', ✓✓.",
 };
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -30,41 +56,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const level = String(criteriaLevel || "5-6");
   const teacherStyle = TEACHER_STYLE[level] || TEACHER_STYLE["5-6"];
 
-  // Build fallback comments locally if no AI keys available
-  if (!hasKeys()) {
-    const fallbackComments = buildFallbackComments(questions, answers, level);
-    return res.status(200).json({ success: true, comments: fallbackComments, offline: true });
+  if (!getGeminiKeys().length) {
+    return res.status(200).json({ success: true, comments: buildFallbackComments(questions, answers, level), offline: true });
   }
 
   try {
-    // Build the question+answer pairs for Gemini
     const qa = (questions as any[]).map((q: any) => ({
-      id: q.id,
-      question: q.text,
-      answer: answers[q.id] || "(pas de réponse)",
+      id: q.id, question: q.text, answer: answers[q.id] || "(pas de réponse)",
     }));
 
-    const rawText = await withKeyRotation(async (ai) => {
+    const rawText = await withKeys(async (ai) => {
       const response = await ai.models.generateContent({
         model: "gemini-2.5-flash",
-        contents: [
-          {
-            text:
-              `Tu es un professeur de mathématiques/sciences français qui corrige le devoir de "${studentName || "l'élève"}".\n` +
-              `Niveau de l'élève : ${level}/8\n` +
-              `Style de correction : ${teacherStyle}\n\n` +
-              `Pour chaque question/réponse ci-dessous, génère UN commentaire de correcteur manuscrit réaliste.\n` +
-              `Le commentaire doit :\n` +
-              `- Être COURT (2-8 mots maximum)\n` +
-              `- Être en français, style naturel d'enseignant\n` +
-              `- Être cohérent avec la qualité de la réponse donnée\n` +
-              `- Parfois inclure des symboles : ✓ ✗ ? ! / etc.\n` +
-              `- Parfois juste un symbole sans texte (✓ ou X ou ?)\n\n` +
-              `Questions et réponses :\n` +
-              qa.map((q: any, i: number) => `Q${i + 1} [${q.id}]: "${q.question}"\nRéponse: "${q.answer}"`).join("\n\n") +
-              `\n\nRetourne un JSON avec pour chaque question son commentaire et sa position relative.`,
-          },
-        ],
+        contents: [{
+          text:
+            `Tu es un professeur français qui corrige le devoir de "${studentName || "l'élève"}".\n` +
+            `Niveau: ${level}/8. Style: ${teacherStyle}\n\n` +
+            `Pour chaque question/réponse, génère UN commentaire court (2-8 mots max), en français naturel d'enseignant.\n` +
+            `Parfois juste un symbole (✓ ou X ou ?).\n\n` +
+            qa.map((q: any, i: number) => `Q${i+1} [${q.id}]: "${q.question}"\nRéponse: "${q.answer}"`).join("\n\n") +
+            `\n\nRetourne JSON avec commentaire et position pour chaque question.`,
+        }],
         config: {
           responseMimeType: "application/json",
           responseSchema: {
@@ -78,8 +90,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                     id:       { type: Type.STRING },
                     text:     { type: Type.STRING },
                     symbol:   { type: Type.STRING },
-                    position: { type: Type.STRING }, // "above", "right", "below", "margin"
-                    style:    { type: Type.STRING }, // "check", "cross", "circle", "underline", "arrow"
+                    position: { type: Type.STRING },
+                    style:    { type: Type.STRING },
                   },
                   required: ["id", "text", "position"],
                 },
@@ -98,7 +110,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const clean = rawText.trim().replace(/^```json\s*/i, "").replace(/```\s*$/, "");
         parsed = JSON.parse(clean);
       } catch {
-        // Extract JSON from markdown if needed
         const m = rawText.match(/\{[\s\S]*\}/);
         if (m) { try { parsed = JSON.parse(m[0]); } catch { /* keep empty */ } }
       }
@@ -112,8 +123,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json({ success: true, comments: commentsMap });
   } catch (err: any) {
     console.error("generate-comments:", err.message);
-    const fallbackComments = buildFallbackComments(questions, answers, level);
-    return res.status(200).json({ success: true, comments: fallbackComments, offline: true });
+    return res.status(200).json({ success: true, comments: buildFallbackComments(questions, answers, level), offline: true });
   }
 }
 
@@ -123,20 +133,17 @@ function buildFallbackComments(
   level: string
 ): Record<string, { text: string; symbol?: string; position: string; style?: string }> {
   const byLevel: Record<string, string[]> = {
-    "1-2": ["Faux!", "À revoir", "Incomplet", "Erreur!", "?", "Non", "Revoir"],
-    "3-4": ["Peut mieux faire", "Incomplet", "Revoir", "Bien mais...", "?", "Incomplet"],
-    "5-6": ["Bien!", "Correct ✓", "Bonne approche", "Ok", "✓", "Bien vu"],
-    "7-8": ["Excellent!", "Parfait ✓", "Très bien", "Bravo!", "✓✓", "Excellent travail"],
+    "1-2": ["Faux!", "À revoir", "Incomplet", "Erreur!", "?", "Non"],
+    "3-4": ["Peut mieux faire", "Incomplet", "Revoir", "Bien mais...", "?"],
+    "5-6": ["Bien!", "Correct ✓", "Bonne approche", "Ok", "✓"],
+    "7-8": ["Excellent!", "Parfait ✓", "Très bien", "Bravo!", "✓✓"],
   };
   const texts = byLevel[level] || byLevel["5-6"];
   const positions = ["right", "above", "margin", "below"];
   const result: Record<string, { text: string; position: string }> = {};
   (questions as any[]).forEach((q: any, i: number) => {
     if (answers[q.id]) {
-      result[q.id] = {
-        text: texts[i % texts.length],
-        position: positions[i % positions.length],
-      };
+      result[q.id] = { text: texts[i % texts.length], position: positions[i % positions.length] };
     }
   });
   return result;

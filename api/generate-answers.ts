@@ -1,9 +1,37 @@
-import { Type } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
 import mongoose from "mongoose";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { withKeyRotation, hasKeys } from "./_gemini";
 
-// ── Inline MongoDB session schema ──────────────────────────────────────────────
+// ── Inline key rotation (Vercel cannot import from sibling api/ files) ────────
+function getGeminiKeys(): string[] {
+  const keys: string[] = [];
+  for (const name of ["GEMINI_API_KEY_1","GEMINI_API_KEY_2","GEMINI_API_KEY_3","GEMINI_API_KEY_4","GEMINI_API_KEY","GEMINI_KEY"]) {
+    const v = process.env[name];
+    if (v && v !== "MY_GEMINI_API_KEY" && v.length > 10) keys.push(v);
+  }
+  return [...new Set(keys)];
+}
+function isQuota(err: any): boolean {
+  const msg = String(err?.message || err?.status || err || "").toLowerCase();
+  return msg.includes("429") || msg.includes("quota") || msg.includes("resource_exhausted") || msg.includes("rate limit") || err?.status === 429;
+}
+async function withKeys<T>(fn: (ai: GoogleGenAI) => Promise<T>): Promise<T> {
+  const keys = getGeminiKeys();
+  if (!keys.length) throw new Error("Aucune clé Gemini configurée.");
+  let last: any;
+  for (let i = 0; i < keys.length; i++) {
+    try {
+      return await fn(new GoogleGenAI({ apiKey: keys[i], httpOptions: { headers: { "User-Agent": "aistudio-build" } } }));
+    } catch (e: any) {
+      if (isQuota(e)) { console.warn(`Gemini key #${i+1} quota → next`); last = e; continue; }
+      throw e;
+    }
+  }
+  throw new Error(`All Gemini keys exhausted. Last: ${last?.message}`);
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Inline MongoDB session schema ─────────────────────────────────────────────
 const EvalSessionSchema = new mongoose.Schema(
   {
     studentName: { type: String, required: true },
@@ -14,11 +42,9 @@ const EvalSessionSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
-
 function getSessionModel() {
   return mongoose.models.EvalSession || mongoose.model("EvalSession", EvalSessionSchema);
 }
-
 async function connectDB(): Promise<boolean> {
   if (mongoose.connection.readyState === 1) return true;
   const uri = process.env.MONGO_URL || process.env.MONGODB_URI || "";
@@ -26,9 +52,7 @@ async function connectDB(): Promise<boolean> {
   try {
     await mongoose.connect(uri, { dbName: "nanobanana", serverSelectionTimeoutMS: 5000 });
     return true;
-  } catch {
-    return false;
-  }
+  } catch { return false; }
 }
 
 const LEVEL_DESC: Record<string, string> = {
@@ -56,8 +80,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const name  = String(studentName || "Élève");
   const levelDesc = LEVEL_DESC[level] || LEVEL_DESC["5-6"];
 
-  // Demo fallback if no keys configured
-  if (!hasKeys()) {
+  const keys = getGeminiKeys();
+  if (!keys.length) {
     const DEMO: Record<string, string[]> = {
       "1-2": ["Je sais pas trop c'est compliqué", "La réponse est environ 135 je crois", "C'est beaucoup d'énergie"],
       "3-4": ["Le coût total est de 135 euros", "La consommation journalière est 10 kWh", "Il faut faire attention à l'énergie"],
@@ -72,7 +96,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     const parts: any[] = [];
-
     if (Array.isArray(pdfPagesBase64)) {
       for (let i = 0; i < Math.min(pdfPagesBase64.length, 4); i++) {
         const pg = String(pdfPagesBase64[i] || "");
@@ -98,7 +121,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         `JSON: {"answers": {"<id>": "<réponse>", ...}}`,
     });
 
-    const rawText = await withKeyRotation(async (ai) => {
+    const rawText = await withKeys(async (ai) => {
       const response = await ai.models.generateContent({
         model: "gemini-2.5-flash",
         contents: parts,
@@ -118,7 +141,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     let parsed: any;
     try { parsed = JSON.parse(rawText.trim()); }
-    catch { const m = rawText.match(/\{[\s\S]*\}/); if (!m) return res.status(500).json({ success: false, error: "JSON invalide." }); parsed = JSON.parse(m[0]); }
+    catch {
+      const m = rawText.match(/\{[\s\S]*\}/);
+      if (!m) return res.status(500).json({ success: false, error: "JSON invalide." });
+      parsed = JSON.parse(m[0]);
+    }
 
     const answers = parsed.answers || {};
 
