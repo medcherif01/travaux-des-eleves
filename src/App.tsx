@@ -582,7 +582,7 @@ export default function App() {
 
   const deleteProfile = async (name: string) => {
     try {
-      await fetch(`/api/students/${encodeURIComponent(name)}`, { method: "DELETE" });
+      await fetch(`/api/students?name=${encodeURIComponent(name)}`, { method: "DELETE" });
     } catch { /* ignore */ }
     setSavedProfiles(prev => {
       const next = prev.filter(p => p.name !== name);

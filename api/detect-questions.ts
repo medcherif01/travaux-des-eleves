@@ -1,36 +1,31 @@
-/**
- * POST /api/detect-questions
- * Gemini reads all uploaded evaluation pages and detects all questions with positions
- */
-
+import { GoogleGenAI, Type } from "@google/genai";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { getAIClient, Type } from "./_lib";
+
+function getAI() {
+  const key = process.env.GEMINI_API_KEY || process.env.GEMINI_KEY || "";
+  if (!key || key === "MY_GEMINI_API_KEY") return null;
+  return new GoogleGenAI({ apiKey: key, httpOptions: { headers: { "User-Agent": "aistudio-build" } } });
+}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
-
-  if (req.method !== "POST") {
-    return res.status(405).json({ success: false, error: "Méthode non autorisée." });
-  }
+  if (req.method !== "POST") return res.status(405).json({ success: false, error: "Méthode non autorisée." });
 
   const { pdfPagesBase64 } = req.body || {};
-
   if (!pdfPagesBase64 || !Array.isArray(pdfPagesBase64) || pdfPagesBase64.length === 0) {
-    return res.status(400).json({ success: false, error: "Pages d'évaluation manquantes." });
+    return res.status(400).json({ success: false, error: "Pages manquantes." });
   }
 
-  const ai = getAIClient();
-
-  // Demo fallback when no API key
+  const ai = getAI();
   if (!ai) {
     return res.status(200).json({
       success: true,
       isDemo: true,
       questions: [
-        { id: "demo_q1", text: "Question 1 (mode démo — configurez GEMINI_API_KEY)", pageIndex: 0, x: 10, y: 28 },
+        { id: "demo_q1", text: "Question 1 (mode démo — configurez GEMINI_API_KEY sur Vercel)", pageIndex: 0, x: 10, y: 28 },
         { id: "demo_q2", text: "Question 2 (mode démo)", pageIndex: 0, x: 10, y: 48 },
         { id: "demo_q3", text: "Question 3 (mode démo)", pageIndex: 0, x: 10, y: 68 },
       ],
@@ -38,42 +33,35 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    const contentParts: any[] = [];
-    const pageCount = Math.min(pdfPagesBase64.length, 6);
+    const parts: any[] = [];
+    const count = Math.min(pdfPagesBase64.length, 6);
 
-    // Send all pages to Gemini for complete detection
-    for (let i = 0; i < pageCount; i++) {
-      const pageData = pdfPagesBase64[i];
-      if (pageData && pageData.includes("base64,")) {
-        const b64 = pageData.split("base64,")[1];
-        const mime = (pageData.split(";")[0].split(":")[1] || "image/png") as any;
-        contentParts.push({ inlineData: { data: b64, mimeType: mime } });
-      }
+    for (let i = 0; i < count; i++) {
+      const pg = String(pdfPagesBase64[i] || "");
+      if (!pg.includes("base64,")) continue;
+      const b64 = pg.split("base64,")[1];
+      const mime = (pg.split(";")[0].split(":")[1] || "image/png") as any;
+      parts.push({ inlineData: { data: b64, mimeType: mime } });
     }
 
-    contentParts.push({
+    parts.push({
       text:
-        `Tu es un expert en analyse de documents scolaires.\n` +
-        `Analyse ces ${pageCount} image(s) d'évaluation scolaire.\n` +
+        `Tu es expert en analyse de documents scolaires.\n` +
+        `Analyse ces ${count} page(s) d'évaluation.\n` +
         `Détecte TOUTES les questions auxquelles l'élève doit écrire une réponse.\n\n` +
-        `Pour chaque question/zone de réponse, fournis:\n` +
-        `- id: identifiant unique court (ex: "q1", "q2a", "ex3_q2")\n` +
-        `- text: texte COMPLET de la question telle qu'elle apparaît dans le document\n` +
-        `- pageIndex: index de la page (0 = première image)\n` +
-        `- x: position horizontale en pourcentage (0-100) du bord gauche de la page\n` +
-        `- y: position verticale en pourcentage (0-100) du haut de la page — PLACE LA RÉPONSE SOUS LA QUESTION (ajoute 5-8% par rapport à la position de la question)\n\n` +
-        `RÈGLES IMPORTANTES:\n` +
-        `- Inclure UNIQUEMENT les zones où l'élève doit écrire (lignes vides, cases de réponse)\n` +
-        `- Placer y APRÈS la question (sur les lignes vides prévues)\n` +
-        `- Ignorer: titres, consignes générales, en-têtes, noms/prénoms\n` +
-        `- Inclure les sous-questions (a), b), c) séparément\n` +
-        `- Maximum 15 questions\n` +
-        `Retourne un JSON {"questions": [...]}`,
+        `Pour chaque question donne:\n` +
+        `- id: identifiant court unique (ex: "q1", "q2a")\n` +
+        `- text: texte complet de la question\n` +
+        `- pageIndex: index page (0 = première)\n` +
+        `- x: % horizontal (0-100) où placer la réponse\n` +
+        `- y: % vertical (0-100) — sur les lignes vides SOUS la question (ajouter 6-10% vs position question)\n\n` +
+        `RÈGLES: Ignorer titres/consignes/en-têtes. Inclure sous-questions (a,b,c). Max 15 questions.\n` +
+        `Retourne JSON {"questions": [...]}`,
     });
 
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
-      contents: contentParts,
+      contents: parts,
       config: {
         responseMimeType: "application/json",
         responseSchema: {
@@ -99,14 +87,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       },
     });
 
-    if (!response.text) {
-      return res.status(500).json({ success: false, error: "Réponse vide de Gemini." });
-    }
-
+    if (!response.text) return res.status(500).json({ success: false, error: "Réponse vide." });
     const parsed = JSON.parse(response.text.trim());
     return res.status(200).json({ success: true, questions: parsed.questions || [] });
   } catch (err: any) {
-    console.error("detect-questions error:", err);
-    return res.status(500).json({ success: false, error: `Erreur Gemini: ${err.message}` });
+    console.error("detect-questions:", err.message);
+    return res.status(500).json({ success: false, error: err.message });
   }
 }
