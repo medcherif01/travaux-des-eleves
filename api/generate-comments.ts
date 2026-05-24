@@ -3,14 +3,9 @@
  * for each student answer. Comments are realistic, grade-level appropriate,
  * written in the style of a French teacher marking student work.
  */
-import { GoogleGenAI, Type } from "@google/genai";
+import { Type } from "@google/genai";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-
-function getAI() {
-  const key = process.env.GEMINI_API_KEY || process.env.GEMINI_KEY || "";
-  if (!key || key === "MY_GEMINI_API_KEY") return null;
-  return new GoogleGenAI({ apiKey: key, httpOptions: { headers: { "User-Agent": "aistudio-build" } } });
-}
+import { withKeyRotation, hasKeys } from "./_gemini";
 
 const TEACHER_STYLE: Record<string, string> = {
   "1-2": "Professeur sévère, beaucoup d'erreurs à corriger. Commentaires courts et directs : 'Faux!', 'Incomplet', 'À revoir', 'Manque de détails', 'Erreur de calcul', éventuellement un point d'interrogation ou un signe X.",
@@ -32,12 +27,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ success: false, error: "Questions et réponses requises." });
   }
 
-  const ai = getAI();
   const level = String(criteriaLevel || "5-6");
   const teacherStyle = TEACHER_STYLE[level] || TEACHER_STYLE["5-6"];
 
-  // Build fallback comments locally if no AI
-  if (!ai) {
+  // Build fallback comments locally if no AI keys available
+  if (!hasKeys()) {
     const fallbackComments = buildFallbackComments(questions, answers, level);
     return res.status(200).json({ success: true, comments: fallbackComments, offline: true });
   }
@@ -50,52 +44,66 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       answer: answers[q.id] || "(pas de réponse)",
     }));
 
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: [
-        {
-          text:
-            `Tu es un professeur de mathématiques/sciences français qui corrige le devoir de "${studentName || "l'élève"}".\n` +
-            `Niveau de l'élève : ${level}/8\n` +
-            `Style de correction : ${teacherStyle}\n\n` +
-            `Pour chaque question/réponse ci-dessous, génère UN commentaire de correcteur manuscrit réaliste.\n` +
-            `Le commentaire doit :\n` +
-            `- Être COURT (2-8 mots maximum)\n` +
-            `- Être en français, style naturel d'enseignant\n` +
-            `- Être cohérent avec la qualité de la réponse donnée\n` +
-            `- Parfois inclure des symboles : ✓ ✗ ? ! / etc.\n` +
-            `- Parfois juste un symbole sans texte (✓ ou X ou ?)\n\n` +
-            `Questions et réponses :\n` +
-            qa.map((q: any, i: number) => `Q${i + 1} [${q.id}]: "${q.question}"\nRéponse: "${q.answer}"`).join("\n\n") +
-            `\n\nRetourne un JSON avec pour chaque question son commentaire et sa position relative.`,
-        },
-      ],
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            comments: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  id:       { type: Type.STRING },
-                  text:     { type: Type.STRING },
-                  symbol:   { type: Type.STRING },
-                  position: { type: Type.STRING }, // "above", "right", "below", "margin"
-                  style:    { type: Type.STRING }, // "check", "cross", "circle", "underline", "arrow"
+    const rawText = await withKeyRotation(async (ai) => {
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [
+          {
+            text:
+              `Tu es un professeur de mathématiques/sciences français qui corrige le devoir de "${studentName || "l'élève"}".\n` +
+              `Niveau de l'élève : ${level}/8\n` +
+              `Style de correction : ${teacherStyle}\n\n` +
+              `Pour chaque question/réponse ci-dessous, génère UN commentaire de correcteur manuscrit réaliste.\n` +
+              `Le commentaire doit :\n` +
+              `- Être COURT (2-8 mots maximum)\n` +
+              `- Être en français, style naturel d'enseignant\n` +
+              `- Être cohérent avec la qualité de la réponse donnée\n` +
+              `- Parfois inclure des symboles : ✓ ✗ ? ! / etc.\n` +
+              `- Parfois juste un symbole sans texte (✓ ou X ou ?)\n\n` +
+              `Questions et réponses :\n` +
+              qa.map((q: any, i: number) => `Q${i + 1} [${q.id}]: "${q.question}"\nRéponse: "${q.answer}"`).join("\n\n") +
+              `\n\nRetourne un JSON avec pour chaque question son commentaire et sa position relative.`,
+          },
+        ],
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              comments: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    id:       { type: Type.STRING },
+                    text:     { type: Type.STRING },
+                    symbol:   { type: Type.STRING },
+                    position: { type: Type.STRING }, // "above", "right", "below", "margin"
+                    style:    { type: Type.STRING }, // "check", "cross", "circle", "underline", "arrow"
+                  },
+                  required: ["id", "text", "position"],
                 },
-                required: ["id", "text", "position"],
               },
             },
+            required: ["comments"],
           },
-          required: ["comments"],
         },
-      },
+      });
+      return response.text || "";
     });
 
-    const parsed = response.text ? JSON.parse(response.text.trim()) : { comments: [] };
+    let parsed: any = { comments: [] };
+    if (rawText) {
+      try {
+        const clean = rawText.trim().replace(/^```json\s*/i, "").replace(/```\s*$/, "");
+        parsed = JSON.parse(clean);
+      } catch {
+        // Extract JSON from markdown if needed
+        const m = rawText.match(/\{[\s\S]*\}/);
+        if (m) { try { parsed = JSON.parse(m[0]); } catch { /* keep empty */ } }
+      }
+    }
+
     const commentsMap: Record<string, { text: string; symbol?: string; position: string; style?: string }> = {};
     for (const c of (parsed.comments || [])) {
       commentsMap[c.id] = { text: c.text, symbol: c.symbol, position: c.position || "right", style: c.style };

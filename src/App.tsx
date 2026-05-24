@@ -2380,18 +2380,56 @@ ${allHTML}
                     </div>
                   </div>
 
-                  {/* Answers summary — read-only, shown on page */}
-                  {questions.filter(q => q.pageIndex === previewPage && (activeAnswers[q.id] ?? "")).length > 0 && (
-                    <div className="bg-green-50 border-2 border-green-200 rounded-2xl p-3 space-y-1">
-                      <p className="text-[8px] font-black text-green-700 flex items-center gap-1">
-                        <CheckCircle className="h-3 w-3" /> {questions.filter(q => q.pageIndex === previewPage && activeAnswers[q.id]).length} réponse(s) sur la page
+                  {/* Editable answers + Apply button */}
+                  {questions.filter(q => q.pageIndex === previewPage).length > 0 && (
+                    <div className="bg-white border-4 border-black rounded-2xl p-3 shadow-[4px_4px_0_rgba(0,0,0,1)] space-y-2">
+                      <p className="text-[9px] font-black text-black/50 flex items-center gap-1">
+                        <Edit3 className="h-3 w-3" /> RÉPONSES — PAGE {previewPage + 1}
                       </p>
-                      {questions.filter(q => q.pageIndex === previewPage && activeAnswers[q.id]).map(q => (
-                        <div key={q.id} className="text-[8px] text-green-800 truncate pl-1 border-l-2 border-green-300">
-                          <span className="font-black">{q.id}:</span> {(activeAnswers[q.id] ?? "").substring(0, 60)}{(activeAnswers[q.id] ?? "").length > 60 ? "…" : ""}
-                        </div>
-                      ))}
-                      <p className="text-[7px] text-green-600/60 pt-1">Active "Déplacer" pour ajuster la position</p>
+                      <div className="space-y-2 max-h-52 overflow-y-auto">
+                        {questions.filter(q => q.pageIndex === previewPage).map(q => {
+                          const val = batchMode && currentBatch ? (currentBatch.answers[q.id] ?? "") : (answers[q.id] ?? "");
+                          return (
+                            <div key={q.id} className="space-y-1">
+                              <label className="text-[8px] font-black text-black/40 block truncate" title={q.text}>
+                                {q.id} — {q.text.substring(0, 45)}{q.text.length > 45 ? "…" : ""}
+                              </label>
+                              <div className="flex gap-1 items-start">
+                                <textarea
+                                  value={val}
+                                  onChange={e => {
+                                    const v = e.target.value;
+                                    if (batchMode && currentBatch) {
+                                      setBatchStudents(prev => prev.map(b =>
+                                        b.id === currentBatch.id ? { ...b, answers: { ...b.answers, [q.id]: v } } : b
+                                      ));
+                                    } else {
+                                      setAnswers(prev => ({ ...prev, [q.id]: v }));
+                                    }
+                                  }}
+                                  rows={2}
+                                  className="flex-1 border-2 border-black/20 rounded-lg p-1.5 text-[10px] focus:outline-none focus:border-black resize-none"
+                                  placeholder="Réponse…"
+                                />
+                                <button
+                                  title="Centrer sur la page (reset offset)"
+                                  onClick={() => {
+                                    if (batchMode && currentBatch) {
+                                      setBatchStudents(prev => prev.map(b =>
+                                        b.id === currentBatch.id ? { ...b, offsets: { ...b.offsets, [q.id]: { x: 0, y: 0 } } } : b
+                                      ));
+                                    } else {
+                                      setOffsets(prev => ({ ...prev, [q.id]: { x: 0, y: 0 } }));
+                                    }
+                                  }}
+                                  className="mt-0.5 px-1.5 py-1 bg-yellow-400 border-2 border-black rounded-lg text-[9px] font-black hover:bg-yellow-500 transition shrink-0"
+                                >✓</button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <p className="text-[7px] text-black/30">Modifie le texte → s'applique en temps réel. ✓ recentre. Glisse avec "Déplacer".</p>
                     </div>
                   )}
                 </div>

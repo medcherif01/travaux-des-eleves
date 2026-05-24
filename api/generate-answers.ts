@@ -1,14 +1,9 @@
-import { GoogleGenAI, Type } from "@google/genai";
+import { Type } from "@google/genai";
 import mongoose from "mongoose";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
+import { withKeyRotation, hasKeys } from "./_gemini";
 
-function getAI() {
-  const key = process.env.GEMINI_API_KEY || process.env.GEMINI_KEY || "";
-  if (!key || key === "MY_GEMINI_API_KEY") return null;
-  return new GoogleGenAI({ apiKey: key, httpOptions: { headers: { "User-Agent": "aistudio-build" } } });
-}
-
-// ── Inline MongoDB session schema ─────────────────────────────────────────────
+// ── Inline MongoDB session schema ──────────────────────────────────────────────
 const EvalSessionSchema = new mongoose.Schema(
   {
     studentName: { type: String, required: true },
@@ -57,13 +52,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const level = String(criteriaLevel || "5-6");
-  const seed = Number(variantSeed || 1);
-  const name = String(studentName || "Élève");
+  const seed  = Number(variantSeed || 1);
+  const name  = String(studentName || "Élève");
   const levelDesc = LEVEL_DESC[level] || LEVEL_DESC["5-6"];
-  const ai = getAI();
 
-  // Demo fallback
-  if (!ai) {
+  // Demo fallback if no keys configured
+  if (!hasKeys()) {
     const DEMO: Record<string, string[]> = {
       "1-2": ["Je sais pas trop c'est compliqué", "La réponse est environ 135 je crois", "C'est beaucoup d'énergie"],
       "3-4": ["Le coût total est de 135 euros", "La consommation journalière est 10 kWh", "Il faut faire attention à l'énergie"],
@@ -79,19 +73,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const parts: any[] = [];
 
-    // Include pages as context (max 4)
     if (Array.isArray(pdfPagesBase64)) {
       for (let i = 0; i < Math.min(pdfPagesBase64.length, 4); i++) {
         const pg = String(pdfPagesBase64[i] || "");
         if (!pg.includes("base64,")) continue;
-        const b64 = pg.split("base64,")[1];
+        const b64  = pg.split("base64,")[1];
         const mime = (pg.split(";")[0].split(":")[1] || "image/png") as any;
         parts.push({ inlineData: { data: b64, mimeType: mime } });
       }
     }
 
     const qList = questions.map((q: any) => `  - ID:"${q.id}" → "${q.text}"`).join("\n");
-
     parts.push({
       text:
         `Tu joues le rôle de l'élève "${name}" (variante ${seed}).\n\n` +
@@ -106,33 +98,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         `JSON: {"answers": {"<id>": "<réponse>", ...}}`,
     });
 
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: parts,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: { answers: { type: Type.OBJECT } },
-          required: ["answers"],
+    const rawText = await withKeyRotation(async (ai) => {
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: parts,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: { answers: { type: Type.OBJECT } },
+            required: ["answers"],
+          },
         },
-      },
+      });
+      return response.text || "";
     });
 
-    const rawText = response.text || "";
     if (!rawText) return res.status(500).json({ success: false, error: "Gemini: réponse vide." });
 
     let parsed: any;
-    try {
-      parsed = JSON.parse(rawText.trim());
-    } catch {
-      const match = rawText.match(/\{[\s\S]*\}/);
-      if (!match) return res.status(500).json({ success: false, error: "Gemini: JSON invalide." });
-      parsed = JSON.parse(match[0]);
-    }
+    try { parsed = JSON.parse(rawText.trim()); }
+    catch { const m = rawText.match(/\{[\s\S]*\}/); if (!m) return res.status(500).json({ success: false, error: "JSON invalide." }); parsed = JSON.parse(m[0]); }
+
     const answers = parsed.answers || {};
 
-    // Save to MongoDB (non-blocking)
     if (saveSession) {
       connectDB().then(async (ok) => {
         if (!ok) return;
@@ -145,7 +134,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     return res.status(200).json({ success: true, answers });
   } catch (err: any) {
-    console.error("generate-answers:", err.message);
-    return res.status(500).json({ success: false, error: err.message });
+    console.error("generate-answers:", err?.message || err);
+    return res.status(500).json({ success: false, error: String(err?.message || "Erreur serveur") });
   }
 }

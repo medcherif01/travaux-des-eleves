@@ -1,11 +1,6 @@
-import { GoogleGenAI, Type } from "@google/genai";
+import { Type } from "@google/genai";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-
-function getAI() {
-  const key = process.env.GEMINI_API_KEY || process.env.GEMINI_KEY || "";
-  if (!key || key === "MY_GEMINI_API_KEY") return null;
-  return new GoogleGenAI({ apiKey: key, httpOptions: { headers: { "User-Agent": "aistudio-build" } } });
-}
+import { withKeyRotation, hasKeys } from "./_gemini";
 
 /**
  * Deep handwriting analysis result — fed directly into HandwrittenText renderer
@@ -18,7 +13,7 @@ const FALLBACK_STYLE = {
   // ── Sizing & spacing
   suggestedSize: 18,           // base font-size px
   letterSpacingEm: -0.02,     // em — negative = cramped, positive = airy
-  wordSpacingPx: 6,           // px between words
+  wordSpacingPx: 6,            // px between words
   lineHeightMultiplier: 1.55, // relative to font-size
 
   // ── Geometry
@@ -70,127 +65,132 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json({ success: true, handwritingStyle: FALLBACK_STYLE });
   }
 
-  const ai = getAI();
-  if (!ai) return res.status(200).json({ success: true, handwritingStyle: FALLBACK_STYLE });
+  if (!hasKeys()) return res.status(200).json({ success: true, handwritingStyle: FALLBACK_STYLE });
 
   try {
     const b64 = String(handwritingImage).split("base64,")[1];
     const mime = (String(handwritingImage).split(";")[0].split(":")[1] || "image/png") as any;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: [
-        { inlineData: { data: b64, mimeType: mime } },
-        {
-          text:
-            `Tu es un expert en analyse graphologique. Analyse très précisément l'écriture manuscrite de "${studentName || "cet élève"}" dans cette image.\n\n` +
-            `Extrais TOUS les paramètres suivants avec la plus grande précision possible :\n\n` +
+    const rawText = await withKeyRotation(async (ai) => {
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [
+          { inlineData: { data: b64, mimeType: mime } },
+          {
+            text:
+              `Tu es un expert en analyse graphologique. Analyse très précisément l'écriture manuscrite de "${studentName || "cet élève"}" dans cette image.\n\n` +
+              `Extrais TOUS les paramètres suivants avec la plus grande précision possible :\n\n` +
 
-            `== POLICE ==\n` +
-            `suggestedFont: OBLIGATOIREMENT l'une de ces options EXACTES: "Homemade Apple", "Marck Script", "Parisienne", "Allura", "La Belle Aurore", "Bad Script"\n` +
-            `Choisis celle dont le style se rapproche le plus de l'écriture visible.\n\n` +
+              `== POLICE ==\n` +
+              `suggestedFont: OBLIGATOIREMENT l'une de ces options EXACTES: "Homemade Apple", "Marck Script", "Parisienne", "Allura", "La Belle Aurore", "Bad Script"\n` +
+              `Choisis celle dont le style se rapproche le plus de l'écriture visible.\n\n` +
 
-            `== COULEUR ==\n` +
-            `suggestedColor: couleur d'encre observée (ex: "blue", "black", "red", "green", "#1d3278")\n\n` +
+              `== COULEUR ==\n` +
+              `suggestedColor: couleur d'encre observée (ex: "blue", "black", "red", "green", "#1d3278")\n\n` +
 
-            `== TAILLE ET ESPACEMENT ==\n` +
-            `suggestedSize: taille de police en px (entre 12 et 26, basé sur la hauteur relative des lettres)\n` +
-            `letterSpacingEm: espacement inter-lettre en em (entre -0.05 et 0.15)\n` +
-            `wordSpacingPx: espacement entre mots en px (entre 3 et 15)\n` +
-            `lineHeightMultiplier: interligne relatif à la taille (entre 1.3 et 2.0)\n\n` +
+              `== TAILLE ET ESPACEMENT ==\n` +
+              `suggestedSize: taille de police en px (entre 12 et 26, basé sur la hauteur relative des lettres)\n` +
+              `letterSpacingEm: espacement inter-lettre en em (entre -0.05 et 0.15)\n` +
+              `wordSpacingPx: espacement entre mots en px (entre 3 et 15)\n` +
+              `lineHeightMultiplier: interligne relatif à la taille (entre 1.3 et 2.0)\n\n` +
 
-            `== GÉOMÉTRIE ET INCLINAISON ==\n` +
-            `suggestedRotation: inclinaison globale en degrés (−8 = très penchée droite, 0 = vertical, +4 = penche gauche)\n` +
-            `baselineWobbleAmp: amplitude de tremblement de ligne en px (0 = parfait, 4 = très tremblant)\n` +
-            `baselineWobbleFreq: fréquence du tremblement (entre 1.0 et 4.0)\n` +
-            `letterRotVariance: variance de rotation par lettre en degrés (0 = uniforme, 8 = très irrégulier)\n` +
-            `letterYVariance: variance verticale par lettre en px (0–3)\n` +
-            `letterXVariance: variance horizontale par lettre en px (0–1.5)\n\n` +
+              `== GÉOMÉTRIE ET INCLINAISON ==\n` +
+              `suggestedRotation: inclinaison globale en degrés (−8 = très penchée droite, 0 = vertical, +4 = penche gauche)\n` +
+              `baselineWobbleAmp: amplitude de tremblement de ligne en px (0 = parfait, 4 = très tremblant)\n` +
+              `baselineWobbleFreq: fréquence du tremblement (entre 1.0 et 4.0)\n` +
+              `letterRotVariance: variance de rotation par lettre en degrés (0 = uniforme, 8 = très irrégulier)\n` +
+              `letterYVariance: variance verticale par lettre en px (0–3)\n` +
+              `letterXVariance: variance horizontale par lettre en px (0–1.5)\n\n` +
 
-            `== ENCRE ET PRESSION ==\n` +
-            `penThickness: épaisseur du trait (0.8 = fin comme gel, 2.5 = épais comme feutre)\n` +
-            `inkOpacityMin: opacité minimale (pression légère), entre 0.5 et 0.95\n` +
-            `inkOpacityMax: opacité maximale (pression forte), entre 0.85 et 1.0\n` +
-            `inkDrySkipRate: taux de lettres à l'encre "sèche"/pâle (entre 0.0 et 0.12)\n` +
-            `inkBleedRadius: rayon de bavure d'encre (0.0 = propre, 0.3 = beaucoup de bavures)\n\n` +
+              `== ENCRE ET PRESSION ==\n` +
+              `penThickness: épaisseur du trait (0.8 = fin comme gel, 2.5 = épais comme feutre)\n` +
+              `inkOpacityMin: opacité minimale (pression légère), entre 0.5 et 0.95\n` +
+              `inkOpacityMax: opacité maximale (pression forte), entre 0.85 et 1.0\n` +
+              `inkDrySkipRate: taux de lettres à l'encre "sèche"/pâle (entre 0.0 et 0.12)\n` +
+              `inkBleedRadius: rayon de bavure d'encre (0.0 = propre, 0.3 = beaucoup de bavures)\n\n` +
 
-            `== DÉSORDRE GLOBAL ==\n` +
-            `messinessIntensity: intensité globale du désordre (0 = parfait, 6 = très bâclé)\n` +
-            `letterSizeVariance: variation de taille par lettre en px (0.0 = uniforme, 2.5 = très variable)\n` +
-            `letterCaseChaos: true si certaines lettres ont une casse incorrecte (majuscule/minuscule mélangée)\n` +
-            `enableUnreadableLetters: true si certaines lettres sont vraiment illisibles\n\n` +
+              `== DÉSORDRE GLOBAL ==\n` +
+              `messinessIntensity: intensité globale du désordre (0 = parfait, 6 = très bâclé)\n` +
+              `letterSizeVariance: variation de taille par lettre en px (0.0 = uniforme, 2.5 = très variable)\n` +
+              `letterCaseChaos: true si certaines lettres ont une casse incorrecte (majuscule/minuscule mélangée)\n` +
+              `enableUnreadableLetters: true si certaines lettres sont vraiment illisibles\n\n` +
 
-            `== RÉALISME INFÉRÉ ==\n` +
-            `inferredRaturesRate: fréquence de ratures/corrections dans l'écriture (0.0–0.15)\n` +
-            `inferredBlancoRate: fréquence d'utilisation de correcteur blanc (0.0–0.08)\n` +
-            `inferredSmudgeFreq: fréquence de bavures/taches (0.0–0.8)\n\n` +
+              `== RÉALISME INFÉRÉ ==\n` +
+              `inferredRaturesRate: fréquence de ratures/corrections dans l'écriture (0.0–0.15)\n` +
+              `inferredBlancoRate: fréquence d'utilisation de correcteur blanc (0.0–0.08)\n` +
+              `inferredSmudgeFreq: fréquence de bavures/taches (0.0–0.8)\n\n` +
 
-            `== EMPREINTE FORME ==\n` +
-            `letterShapeFingerprint: tableau de 16 nombres entre 0.0 et 1.0 représentant l'empreinte unique de cette écriture.\n` +
-            `Ces valeurs seront utilisées comme seed de déformation. Varies-les selon les caractéristiques observées:\n` +
-            `[inclinaison_a, inclinaison_e, hauteur_t, boucle_l, pression_finale_mot, uniformite_o, taille_majuscule, espace_inter_mot, tremblement_h, jonction_lettres, fermeture_boucles, lignes_obliques, dechirement_papier, contact_baseline, progression_haut, regularite_globale]\n\n` +
+              `== EMPREINTE FORME ==\n` +
+              `letterShapeFingerprint: tableau de 16 nombres entre 0.0 et 1.0 représentant l'empreinte unique de cette écriture.\n` +
+              `Ces valeurs seront utilisées comme seed de déformation. Varies-les selon les caractéristiques observées:\n` +
+              `[inclinaison_a, inclinaison_e, hauteur_t, boucle_l, pression_finale_mot, uniformite_o, taille_majuscule, espace_inter_mot, tremblement_h, jonction_lettres, fermeture_boucles, lignes_obliques, dechirement_papier, contact_baseline, progression_haut, regularite_globale]\n\n` +
 
-            `== DESCRIPTION ==\n` +
-            `analysisDescription: description graphologique en français (max 120 chars)\n` +
-            `confidenceScore: confiance de l'analyse entre 0 et 100\n\n` +
+              `== DESCRIPTION ==\n` +
+              `analysisDescription: description graphologique en français (max 120 chars)\n` +
+              `confidenceScore: confiance de l'analyse entre 0 et 100\n\n` +
 
-            `Réponds UNIQUEMENT avec un JSON valide, aucun autre texte.`,
-        },
-      ],
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            suggestedFont:           { type: Type.STRING },
-            suggestedColor:          { type: Type.STRING },
-            suggestedSize:           { type: Type.NUMBER },
-            letterSpacingEm:         { type: Type.NUMBER },
-            wordSpacingPx:           { type: Type.NUMBER },
-            lineHeightMultiplier:    { type: Type.NUMBER },
-            suggestedRotation:       { type: Type.NUMBER },
-            baselineWobbleAmp:       { type: Type.NUMBER },
-            baselineWobbleFreq:      { type: Type.NUMBER },
-            letterRotVariance:       { type: Type.NUMBER },
-            letterYVariance:         { type: Type.NUMBER },
-            letterXVariance:         { type: Type.NUMBER },
-            penThickness:            { type: Type.NUMBER },
-            inkOpacityMin:           { type: Type.NUMBER },
-            inkOpacityMax:           { type: Type.NUMBER },
-            inkDrySkipRate:          { type: Type.NUMBER },
-            inkBleedRadius:          { type: Type.NUMBER },
-            messinessIntensity:      { type: Type.NUMBER },
-            letterSizeVariance:      { type: Type.NUMBER },
-            letterCaseChaos:         { type: Type.BOOLEAN },
-            enableUnreadableLetters: { type: Type.BOOLEAN },
-            inferredRaturesRate:     { type: Type.NUMBER },
-            inferredBlancoRate:      { type: Type.NUMBER },
-            inferredSmudgeFreq:      { type: Type.NUMBER },
-            letterShapeFingerprint: {
-              type: Type.ARRAY,
-              items: { type: Type.NUMBER },
-            },
-            analysisDescription:     { type: Type.STRING },
-            confidenceScore:         { type: Type.NUMBER },
+              `Réponds UNIQUEMENT avec un JSON valide, aucun autre texte.`,
           },
-          required: [
-            "suggestedFont", "suggestedColor", "suggestedSize", "letterSpacingEm",
-            "wordSpacingPx", "lineHeightMultiplier", "suggestedRotation",
-            "baselineWobbleAmp", "baselineWobbleFreq", "letterRotVariance",
-            "letterYVariance", "letterXVariance", "penThickness",
-            "inkOpacityMin", "inkOpacityMax", "inkDrySkipRate", "inkBleedRadius",
-            "messinessIntensity", "letterSizeVariance", "letterCaseChaos",
-            "enableUnreadableLetters", "inferredRaturesRate", "inferredBlancoRate",
-            "inferredSmudgeFreq", "letterShapeFingerprint",
-            "analysisDescription", "confidenceScore",
-          ],
+        ],
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              suggestedFont:           { type: Type.STRING },
+              suggestedColor:          { type: Type.STRING },
+              suggestedSize:           { type: Type.NUMBER },
+              letterSpacingEm:         { type: Type.NUMBER },
+              wordSpacingPx:           { type: Type.NUMBER },
+              lineHeightMultiplier:    { type: Type.NUMBER },
+              suggestedRotation:       { type: Type.NUMBER },
+              baselineWobbleAmp:       { type: Type.NUMBER },
+              baselineWobbleFreq:      { type: Type.NUMBER },
+              letterRotVariance:       { type: Type.NUMBER },
+              letterYVariance:         { type: Type.NUMBER },
+              letterXVariance:         { type: Type.NUMBER },
+              penThickness:            { type: Type.NUMBER },
+              inkOpacityMin:           { type: Type.NUMBER },
+              inkOpacityMax:           { type: Type.NUMBER },
+              inkDrySkipRate:          { type: Type.NUMBER },
+              inkBleedRadius:          { type: Type.NUMBER },
+              messinessIntensity:      { type: Type.NUMBER },
+              letterSizeVariance:      { type: Type.NUMBER },
+              letterCaseChaos:         { type: Type.BOOLEAN },
+              enableUnreadableLetters: { type: Type.BOOLEAN },
+              inferredRaturesRate:     { type: Type.NUMBER },
+              inferredBlancoRate:      { type: Type.NUMBER },
+              inferredSmudgeFreq:      { type: Type.NUMBER },
+              letterShapeFingerprint: {
+                type: Type.ARRAY,
+                items: { type: Type.NUMBER },
+              },
+              analysisDescription:     { type: Type.STRING },
+              confidenceScore:         { type: Type.NUMBER },
+            },
+            required: [
+              "suggestedFont", "suggestedColor", "suggestedSize", "letterSpacingEm",
+              "wordSpacingPx", "lineHeightMultiplier", "suggestedRotation",
+              "baselineWobbleAmp", "baselineWobbleFreq", "letterRotVariance",
+              "letterYVariance", "letterXVariance", "penThickness",
+              "inkOpacityMin", "inkOpacityMax", "inkDrySkipRate", "inkBleedRadius",
+              "messinessIntensity", "letterSizeVariance", "letterCaseChaos",
+              "enableUnreadableLetters", "inferredRaturesRate", "inferredBlancoRate",
+              "inferredSmudgeFreq", "letterShapeFingerprint",
+              "analysisDescription", "confidenceScore",
+            ],
+          },
         },
-      },
+      });
+      return response.text || "";
     });
 
     let parsed: any = FALLBACK_STYLE;
-    if (response.text) {
-      try { parsed = JSON.parse(response.text.trim()); } catch { /* keep fallback */ }
+    if (rawText) {
+      try {
+        const clean = rawText.trim().replace(/^```json\s*/i, "").replace(/```\s*$/, "");
+        parsed = JSON.parse(clean);
+      } catch { /* keep fallback */ }
     }
 
     // Clamp & sanitise all values to prevent rendering glitches
