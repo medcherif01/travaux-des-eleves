@@ -7,6 +7,12 @@ function getAI() {
   return new GoogleGenAI({ apiKey: key, httpOptions: { headers: { "User-Agent": "aistudio-build" } } });
 }
 
+function clamp(v: number, min: number, max: number, def: number) {
+  const n = Number(v);
+  if (!isFinite(n)) return def;
+  return Math.max(min, Math.min(max, n));
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -25,9 +31,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       success: true,
       isDemo: true,
       questions: [
-        { id: "demo_q1", text: "Question 1 (mode démo — configurez GEMINI_API_KEY)", pageIndex: 0, x: 8, y: 32, maxWidth: 82 },
-        { id: "demo_q2", text: "Question 2 (mode démo)", pageIndex: 0, x: 8, y: 52, maxWidth: 82 },
-        { id: "demo_q3", text: "Question 3 (mode démo)", pageIndex: 0, x: 8, y: 72, maxWidth: 82 },
+        { id: "demo_q1", text: "Question 1 (mode démo — configurez GEMINI_API_KEY)", pageIndex: 0, x: 8, y: 30, maxWidth: 82 },
+        { id: "demo_q2", text: "Question 2 (mode démo)", pageIndex: 0, x: 8, y: 50, maxWidth: 82 },
+        { id: "demo_q3", text: "Question 3 (mode démo)", pageIndex: 0, x: 8, y: 70, maxWidth: 82 },
       ],
     });
   }
@@ -44,29 +50,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       parts.push({ inlineData: { data: b64, mimeType: mime } });
     }
 
+    if (parts.length === 0) {
+      return res.status(400).json({ success: false, error: "Aucune image valide trouvée." });
+    }
+
     parts.push({
       text:
-        `Tu es expert en analyse de documents scolaires. Analyse ces ${count} page(s) d'évaluation.\n\n` +
-
-        `OBJECTIF: Trouver TOUTES les zones où l'élève doit écrire une réponse (lignes pointillées, espaces vides, cases "Réponse :", "Calcul :", etc.)\n\n` +
-
-        `Pour chaque zone de réponse, retourne:\n` +
-        `- id: identifiant unique (ex: "q1", "q1a", "q2b") — DOIT correspondre à la vraie question\n` +
-        `- text: texte COMPLET de la question/consigne\n` +
-        `- pageIndex: numéro de page (0 = première page)\n` +
-        `- x: position horizontale % (0-100) du DÉBUT de la zone de réponse (généralement 8-15 pour ligne à gauche)\n` +
-        `- y: position verticale % (0-100) de LA PREMIÈRE LIGNE VIDE où écrire — PAS le texte de la question, mais la ligne pointillée ou l'espace blanc APRÈS\n` +
-        `   EXEMPLES: si "Réponse :" est à y=35%, mettre y=35. Si lignes pointillées commencent à 40%, mettre y=40\n` +
-        `- maxWidth: largeur max en % (généralement 75-85)\n\n` +
-
-        `RÈGLES IMPORTANTES:\n` +
-        `1. Ignorer titres, objectifs, critères, en-têtes\n` +
-        `2. Inclure sous-questions (1a, 1b, 2a...)\n` +
-        `3. y doit pointer sur LA ZONE D'ÉCRITURE, pas le texte de la question\n` +
-        `4. Si plusieurs lignes de réponse, pointer sur la première\n` +
-        `5. Max 20 questions par page\n\n` +
-
-        `Retourne JSON strict: {"questions": [...]}`,
+        `Analyse ce document scolaire. Détecte TOUTES les zones où l'élève doit écrire une réponse.\n\n` +
+        `Pour chaque zone de réponse retourne:\n` +
+        `- id: identifiant unique (q1, q2, q1a, q1b...)\n` +
+        `- text: texte complet de la question/consigne\n` +
+        `- pageIndex: numéro de page (0 = première)\n` +
+        `- x: % horizontal (5 à 15) du début de la zone de réponse\n` +
+        `- y: % vertical (5 à 95) de LA PREMIÈRE LIGNE VIDE où écrire — APRÈS le texte de la question\n` +
+        `  Exemple: si question à 30%, la ligne de réponse est à 35-38%\n` +
+        `  Si "Réponse :" suivi d'une ligne est à 40%, mettre y=40\n\n` +
+        `IMPORTANT: ignorer titres, objectifs, critères. Max 20 questions.\n` +
+        `Répondre UNIQUEMENT avec JSON: {"questions":[...]}`,
     });
 
     const response = await ai.models.generateContent({
@@ -87,7 +87,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                   pageIndex: { type: Type.NUMBER },
                   x:         { type: Type.NUMBER },
                   y:         { type: Type.NUMBER },
-                  maxWidth:  { type: Type.NUMBER },
                 },
                 required: ["id", "text", "pageIndex", "x", "y"],
               },
@@ -98,17 +97,38 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       },
     });
 
-    if (!response.text) return res.status(500).json({ success: false, error: "Réponse vide." });
-    const parsed = JSON.parse(response.text.trim());
-    const questions = (parsed.questions || []).map((q: any) => ({
-      ...q,
-      x:        Math.max(1,  Math.min(40,  Number(q.x)        || 8)),
-      y:        Math.max(5,  Math.min(95,  Number(q.y)        || 30)),
-      maxWidth: Math.max(40, Math.min(90,  Number(q.maxWidth) || 82)),
-    }));
+    const rawText = response.text || "";
+    if (!rawText) return res.status(500).json({ success: false, error: "Gemini: réponse vide." });
+
+    let parsed: any;
+    try {
+      parsed = JSON.parse(rawText.trim());
+    } catch {
+      // Try extracting JSON from text
+      const match = rawText.match(/\{[\s\S]*\}/);
+      if (!match) return res.status(500).json({ success: false, error: "Gemini: JSON invalide." });
+      parsed = JSON.parse(match[0]);
+    }
+
+    const raw = Array.isArray(parsed?.questions) ? parsed.questions : [];
+    const questions = raw
+      .filter((q: any) => q && q.id && q.text)
+      .map((q: any) => ({
+        id:        String(q.id).replace(/[^a-zA-Z0-9_]/g, "_"),
+        text:      String(q.text),
+        pageIndex: clamp(q.pageIndex, 0, 20, 0),
+        x:         clamp(q.x, 1, 30, 8),
+        y:         clamp(q.y, 5, 95, 30),
+        maxWidth:  82,
+      }));
+
+    if (questions.length === 0) {
+      return res.status(200).json({ success: false, error: "Aucune question détectée dans ce document." });
+    }
+
     return res.status(200).json({ success: true, questions });
   } catch (err: any) {
-    console.error("detect-questions:", err.message);
-    return res.status(500).json({ success: false, error: err.message });
+    console.error("detect-questions ERROR:", err?.message || err);
+    return res.status(500).json({ success: false, error: String(err?.message || "Erreur serveur") });
   }
 }

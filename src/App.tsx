@@ -1406,8 +1406,13 @@ export default function App() {
       });
       const d = await r.json();
       if (d.success && d.answers) {
-        setAnswers(d.answers); setOffsets({}); setPreviewPage(0); setStep("preview");
-      } else setGenErr("Erreur lors de la génération.");
+        setAnswers(d.answers);
+        setOffsets({});
+        // Go to first page that has answers
+        const firstPage = questions.filter(q => d.answers[q.id]).reduce((min, q) => Math.min(min, q.pageIndex), 0);
+        setPreviewPage(firstPage);
+        setStep("preview");
+      } else setGenErr(d.error || "Erreur lors de la génération.");
     } catch { setGenErr("Erreur de connexion."); }
     setIsGenerating(false);
   };

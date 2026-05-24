@@ -119,8 +119,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       },
     });
 
-    if (!response.text) return res.status(500).json({ success: false, error: "Réponse vide." });
-    const parsed = JSON.parse(response.text.trim());
+    const rawText = response.text || "";
+    if (!rawText) return res.status(500).json({ success: false, error: "Gemini: réponse vide." });
+
+    let parsed: any;
+    try {
+      parsed = JSON.parse(rawText.trim());
+    } catch {
+      const match = rawText.match(/\{[\s\S]*\}/);
+      if (!match) return res.status(500).json({ success: false, error: "Gemini: JSON invalide." });
+      parsed = JSON.parse(match[0]);
+    }
     const answers = parsed.answers || {};
 
     // Save to MongoDB (non-blocking)
