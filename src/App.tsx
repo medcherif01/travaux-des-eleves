@@ -77,18 +77,36 @@ interface TeacherComment {
   teacherColor: string;
 }
 
+type TriangleSubtype = "quelconque" | "rectangle" | "equilateral" | "isocele";
+
 interface GeometryShape {
   id: string; pageIndex: number;
   type: "line" | "circle" | "arc" | "rectangle" | "triangle";
+  triangleSubtype?: TriangleSubtype;   // triangle variant
   x1: number; y1: number; x2?: number; y2?: number;
   x3?: number; y3?: number; radius?: number;
   startAngle?: number; endAngle?: number;
   label?: string; strokeColor?: string; strokeWidth?: number; pencilNoise?: number;
+  // editable measures (override auto-computed display)
+  measureW?: number;  // rectangle width in cm
+  measureH?: number;  // rectangle height in cm
+  measureR?: number;  // circle radius in cm
+  measureL?: number;  // line/segment length in cm
   // transform
   rotation?: number;   // degrees around centroid
   offsetX?: number;    // drag offset in SVG units
   offsetY?: number;
   showMeasure?: boolean; // show length/angle
+}
+
+// Teacher evaluation note (global comment, shown on page 0)
+interface TeacherNote {
+  text: string;
+  x: number;   // % of page width
+  y: number;   // % of page height
+  color: string;
+  fontKey: string;
+  fontSize: number;
 }
 
 interface PageEffectOverrides {
@@ -1011,12 +1029,81 @@ function DraggableAnswer({ question, answer, profile, variantSeed, editMode, off
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// DRAGGABLE LABEL (student name / teacher note)
+// ─────────────────────────────────────────────────────────────────────────────
+function DraggableLabel({ label, x, y, fontFamily, fontSize, color, editMode, onMove, italic, maxWidth }: {
+  label: string; x: number; y: number;
+  fontFamily: string; fontSize: number; color: string;
+  editMode?: boolean;
+  onMove?: (dx: number, dy: number) => void;
+  italic?: boolean; maxWidth?: string;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const dragging = useRef<{ startX: number; startY: number } | null>(null);
+
+  const onMouseDown = (e: React.MouseEvent) => {
+    if (!editMode) return;
+    e.preventDefault();
+    dragging.current = { startX: e.clientX, startY: e.clientY };
+  };
+
+  useEffect(() => {
+    if (!editMode) return;
+    const mv = (e: MouseEvent) => {
+      if (!dragging.current || !ref.current) return;
+      const container = ref.current.parentElement;
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      const dx = ((e.clientX - dragging.current.startX) / rect.width) * 100;
+      const dy = ((e.clientY - dragging.current.startY) / rect.height) * 100;
+      dragging.current = { startX: e.clientX, startY: e.clientY };
+      onMove?.(dx, dy);
+    };
+    const up = () => { dragging.current = null; };
+    window.addEventListener("mousemove", mv);
+    window.addEventListener("mouseup", up);
+    return () => { window.removeEventListener("mousemove", mv); window.removeEventListener("mouseup", up); };
+  }, [editMode, onMove]);
+
+  return (
+    <div ref={ref} onMouseDown={onMouseDown} style={{
+      position: "absolute",
+      left: `${x}%`, top: `${y}%`,
+      fontFamily: `'${fontFamily}', cursive`,
+      fontSize,
+      color,
+      zIndex: 7,
+      cursor: editMode ? "move" : "default",
+      userSelect: "none",
+      transform: "rotate(-1.2deg)",
+      opacity: 0.92,
+      maxWidth: maxWidth || "44%",
+      fontStyle: italic ? "italic" : "normal",
+      lineHeight: 1.4,
+      whiteSpace: "pre-wrap",
+      wordBreak: "break-word",
+    }}>
+      {editMode && (
+        <div style={{
+          position: "absolute", top: -12, left: 0, fontSize: 8,
+          background: "#7c3aed", color: "#fff", padding: "1px 4px",
+          borderRadius: 3, whiteSpace: "nowrap", pointerEvents: "none",
+        }}>✥ déplacer</div>
+      )}
+      {label}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // PAGE LAYER
 // ─────────────────────────────────────────────────────────────────────────────
 function PageLayer({ page, pi, questions, answers, profile, variantSeed,
   editMode, offsets, onOffsetChange, effects, shapes, comments,
   onCommentDrag, forPrint, artImageOverride, studentName,
-  onUpdateShape, selectedShapeId, onSelectShape }: {
+  onUpdateShape, selectedShapeId, onSelectShape,
+  showName, namePosX, namePosY, onNameMove,
+  teacherNote, onTeacherNoteMove }: {
   page: EvalPage; pi: number;
   questions: DetectedQuestion[]; answers: Record<string, string>;
   profile: StudentProfile; variantSeed: number;
@@ -1031,6 +1118,11 @@ function PageLayer({ page, pi, questions, answers, profile, variantSeed,
   onUpdateShape?: (id: string, patch: Partial<GeometryShape>) => void;
   selectedShapeId?: string | null;
   onSelectShape?: (id: string | null) => void;
+  showName?: boolean;
+  namePosX?: number; namePosY?: number;
+  onNameMove?: (dx: number, dy: number) => void;
+  teacherNote?: TeacherNote | null;
+  onTeacherNoteMove?: (dx: number, dy: number) => void;
 }) {
   const filterId = `p${pi}`;
   const pageQ    = questions.filter(q => q.pageIndex === pi);
@@ -1087,18 +1179,31 @@ function PageLayer({ page, pi, questions, answers, profile, variantSeed,
             onDelta={onOffsetChange} effects={effects} />
         );
       })}
-      {pi === 0 && studentName && (
-        <div style={{
-          position: "absolute", top: "4%", right: "4%",
-          fontFamily: `'${getFontFamily(profile.fontKey)}', cursive`,
-          fontSize: Math.max(13, profile.fontSize),
-          color: profile.inkColor,
-          zIndex: 6, pointerEvents: "none",
-          transform: "rotate(-1.5deg)", opacity: 0.9,
-          maxWidth: "45%",
-        }}>
-          {studentName}
-        </div>
+      {/* Draggable student name — page 0 only */}
+      {pi === 0 && studentName && showName !== false && (
+        <DraggableLabel
+          label={studentName}
+          x={namePosX ?? 55} y={namePosY ?? 4}
+          fontFamily={getFontFamily(profile.fontKey)}
+          fontSize={Math.max(13, profile.fontSize)}
+          color={profile.inkColor}
+          editMode={editMode}
+          onMove={onNameMove}
+        />
+      )}
+      {/* Draggable teacher evaluation note — page 0 only */}
+      {pi === 0 && teacherNote && (
+        <DraggableLabel
+          label={teacherNote.text}
+          x={teacherNote.x} y={teacherNote.y}
+          fontFamily={getFontFamily(teacherNote.fontKey)}
+          fontSize={teacherNote.fontSize * 4.5}
+          color={teacherNote.color}
+          editMode={editMode}
+          onMove={(dx, dy) => onTeacherNoteMove?.(dx, dy)}
+          italic
+          maxWidth="70%"
+        />
       )}
       {editMode && !forPrint && (
         <div style={{ position: "absolute", inset: 0, border: "2px dashed #6366f1",
@@ -1268,24 +1373,57 @@ function CommentManager({ comments, questions, answers, onUpdate, onGenerate, is
 // ─────────────────────────────────────────────────────────────────────────────
 // GEOMETRY BUILDER
 // ─────────────────────────────────────────────────────────────────────────────
+// Triangle coordinate presets
+function triangleCoords(sub: TriangleSubtype): { x1:number; y1:number; x2:number; y2:number; x3:number; y3:number } {
+  if (sub === "equilateral") {
+    // equilateral: all sides equal, angles 60°
+    return { x1: 35, y1: 28, x2: 15, y2: 68, x3: 55, y3: 68 };
+  }
+  if (sub === "rectangle") {
+    // right angle at x2,y2 (bottom-left)
+    return { x1: 15, y1: 28, x2: 15, y2: 68, x3: 55, y3: 68 };
+  }
+  if (sub === "isocele") {
+    // apex centred, two equal sides
+    return { x1: 35, y1: 28, x2: 15, y2: 68, x3: 55, y3: 68 };
+  }
+  // quelconque — generic scalene
+  return { x1: 30, y1: 30, x2: 10, y2: 70, x3: 62, y3: 65 };
+}
+
 const GEO_PRESETS: { label: string; emoji: string; shape: Omit<GeometryShape, "id" | "pageIndex"> }[] = [
-  { label: "Segment", emoji: "📏", shape: { type: "line", x1: 10, y1: 30, x2: 60, y2: 30, label: "6 cm", pencilNoise: 0.2 } },
-  { label: "Cercle",  emoji: "⭕", shape: { type: "circle", x1: 50, y1: 60, radius: 15, label: "r=3cm", pencilNoise: 0.3 } },
+  { label: "Segment",   emoji: "📏", shape: { type: "line",      x1: 10, y1: 30, x2: 60, y2: 30, label: "6 cm", pencilNoise: 0.2 } },
+  { label: "Cercle",    emoji: "⭕", shape: { type: "circle",    x1: 50, y1: 60, radius: 15, label: "r=3cm", pencilNoise: 0.3 } },
   { label: "Rectangle", emoji: "▭", shape: { type: "rectangle", x1: 15, y1: 40, x2: 55, y2: 65, pencilNoise: 0.25 } },
-  { label: "Triangle",  emoji: "△", shape: { type: "triangle", x1: 30, y1: 30, x2: 10, y2: 70, x3: 60, y3: 70, pencilNoise: 0.3 } },
+];
+
+const TRIANGLE_SUBTYPES: { sub: TriangleSubtype; label: string; desc: string }[] = [
+  { sub: "quelconque",  label: "Quelconque",   desc: "Côtés tous différents" },
+  { sub: "rectangle",  label: "Rectangle",    desc: "Un angle de 90°" },
+  { sub: "equilateral",label: "Équilatéral",  desc: "Tous côtés égaux" },
+  { sub: "isocele",    label: "Isocèle",      desc: "Deux côtés égaux" },
 ];
 
 function GeometryBuilder({ pageIndex, onAdd }: { pageIndex: number; onAdd: (s: GeometryShape) => void }) {
-  const [noise, setNoise] = useState(0.3);
-  const [color, setColor] = useState("#2d2d3a");
+  const [noise, setNoise]             = useState(0.3);
+  const [color, setColor]             = useState("#2d2d3a");
+  const [triSub, setTriSub]           = useState<TriangleSubtype>("quelconque");
+  const [showTriPicker, setShowTriPicker] = useState(false);
+
+  const addShape = (base: Omit<GeometryShape, "id" | "pageIndex">) => {
+    onAdd({ ...base, id: `geo_${Date.now()}`, pageIndex, pencilNoise: noise, strokeColor: color });
+  };
+
   return (
     <div className="space-y-2">
+      {/* Crayon */}
       <div className="flex items-center gap-2">
         <span className="text-[10px] text-slate-500 font-medium w-14 shrink-0">Crayon</span>
         <input type="range" min={0} max={1} step={0.05} value={noise}
           onChange={e => setNoise(parseFloat(e.target.value))} className="flex-1 accent-slate-700 h-1.5" />
         <span className="text-[10px] font-bold w-16 text-right">{noise < 0.2 ? "Règle" : noise < 0.6 ? "Normal" : "Brouillon"}</span>
       </div>
+      {/* Couleur */}
       <div className="flex items-center gap-2">
         <span className="text-[10px] text-slate-500 font-medium w-14 shrink-0">Couleur</span>
         {["#2d2d3a","#6b4226","#1d3278"].map(c => (
@@ -1299,16 +1437,42 @@ function GeometryBuilder({ pageIndex, onAdd }: { pageIndex: number; onAdd: (s: G
           <div className="w-full h-full rounded-full" style={{ background: color }} />
         </label>
       </div>
+      {/* Shape buttons */}
       <div className="grid grid-cols-2 gap-1.5">
         {GEO_PRESETS.map(p => (
-          <button key={p.label} onClick={() => onAdd({
-            ...p.shape, id: `geo_${Date.now()}`, pageIndex, pencilNoise: noise, strokeColor: color,
-          })}
+          <button key={p.label} onClick={() => addShape(p.shape)}
             className="flex items-center gap-1.5 px-2 py-2 border border-slate-200 rounded-lg hover:border-indigo-300 hover:bg-indigo-50 transition text-left">
             <span className="text-base">{p.emoji}</span>
             <span className="text-[10px] font-semibold">{p.label}</span>
           </button>
         ))}
+        {/* Triangle with subtype picker */}
+        <div className="relative">
+          <button onClick={() => setShowTriPicker(v => !v)}
+            className="w-full flex items-center gap-1.5 px-2 py-2 border border-slate-200 rounded-lg hover:border-indigo-300 hover:bg-indigo-50 transition text-left">
+            <span className="text-base">△</span>
+            <span className="text-[10px] font-semibold flex-1">Triangle</span>
+            <ChevronDown className={`h-3 w-3 text-slate-400 transition-transform ${showTriPicker ? "rotate-180" : ""}`} />
+          </button>
+          {showTriPicker && (
+            <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-xl z-20 overflow-hidden">
+              {TRIANGLE_SUBTYPES.map(({ sub, label, desc }) => (
+                <button key={sub}
+                  onClick={() => {
+                    setTriSub(sub);
+                    setShowTriPicker(false);
+                    const coords = triangleCoords(sub);
+                    addShape({ type: "triangle", triangleSubtype: sub, ...coords, pencilNoise: noise });
+                  }}
+                  className={`w-full text-left px-2.5 py-2 text-[10px] hover:bg-indigo-50 transition border-b border-slate-100 last:border-0
+                    ${triSub === sub ? "bg-indigo-50 text-indigo-700 font-bold" : "text-slate-700"}`}>
+                  <span className="font-bold">{label}</span>
+                  <span className="text-slate-400 ml-1">— {desc}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -1371,6 +1535,8 @@ function buildPrintHTML(
   offsets: Record<string, { x: number; y: number }>, profile: StudentProfile,
   comments: TeacherComment[], effects: PageEffectOverrides,
   studentName: string, artImages?: Record<number, string>,
+  teacherNote?: TeacherNote | null,
+  namePos?: { x: number; y: number },
 ): string {
   const fp       = profile.fingerprint;
   const useFP    = !!fp && (fp.confidenceScore ?? 0) >= 55;
@@ -1415,9 +1581,17 @@ function buildPrintHTML(
     }).join("\n");
   };
 
+  const namePct = namePos ?? { x: 55, y: 4 };
   const nameHTML = (pi0: number) => pi0 === 0 && studentName
-    ? `<div style="position:absolute;top:4%;right:4%;font-family:'${fontFam}',cursive;font-size:${Math.max(13, fontSize)}px;color:${inkCol};z-index:6;pointer-events:none;transform:rotate(-1.5deg);opacity:0.9;max-width:45%">${studentName}</div>`
+    ? `<div style="position:absolute;left:${namePct.x}%;top:${namePct.y}%;font-family:'${fontFam}',cursive;font-size:${Math.max(13, fontSize)}px;color:${inkCol};z-index:6;pointer-events:none;transform:rotate(-1.5deg);opacity:0.9;max-width:45%">${studentName}</div>`
     : "";
+
+  const noteHTML = (pi0: number) => {
+    if (pi0 !== 0 || !teacherNote) return "";
+    const nff  = getFontFamily(teacherNote.fontKey);
+    const nfs  = Math.max(8, teacherNote.fontSize * 4.5);
+    return `<div style="position:absolute;left:${teacherNote.x}%;top:${teacherNote.y}%;font-family:'${nff}',cursive;font-size:${nfs}px;color:${teacherNote.color};z-index:7;pointer-events:none;max-width:90%;line-height:1.4;transform:rotate(-0.8deg);opacity:0.95">${teacherNote.text.replace(/&/g,"&amp;").replace(/</g,"&lt;")}</div>`;
+  };
 
   const pagesHTML = pages.map((page, pi) => {
     const imgHTML = page.base64 ? `<img src="${page.base64}" style="position:absolute;inset:0;width:100%;height:100%;object-fit:fill"/>` : "";
@@ -1427,7 +1601,7 @@ function buildPrintHTML(
     return `<div style="position:relative;width:210mm;height:297mm;overflow:hidden;background:white;page-break-after:always;box-sizing:border-box">
   ${imgHTML}${artImg}
   ${commSVG ? `<svg style="position:absolute;inset:0;width:100%;height:100%;overflow:visible" viewBox="0 0 100 141.4" preserveAspectRatio="none">${commSVG}</svg>` : ""}
-  ${nameHTML(pi)}${ansHTML}
+  ${nameHTML(pi)}${noteHTML(pi)}${ansHTML}
 </div>`;
   }).join("\n");
 
@@ -1487,6 +1661,18 @@ export default function App() {
   const [shapes, setShapes]             = useState<GeometryShape[]>([]);
   const [artImages, setArtImages]       = useState<Record<number, string>>({});
   const [sidePanel, setSidePanel]       = useState<"position" | "effects" | "comments" | "geometry" | "art">("position");
+
+  // Teacher evaluation note (draggable, page 0)
+  const [teacherNote, setTeacherNote]   = useState<TeacherNote | null>(null);
+  const [isGenNote, setIsGenNote]       = useState(false);
+  const [genNoteErr, setGenNoteErr]     = useState("");
+
+  // Draggable student name position (% of page)
+  const [namePos, setNamePos]           = useState<{ x: number; y: number }>({ x: 55, y: 4 });
+  const [showName, setShowName]         = useState(true);
+
+  // Batch generation progress
+  const [batchProgress, setBatchProgress] = useState<{ done: number; total: number } | null>(null);
   const [selectedShapeId, setSelectedShapeId] = useState<string | null>(null);
 
   const handleUpdateShape = useCallback((id: string, patch: Partial<GeometryShape>) => {
@@ -1817,7 +2003,9 @@ export default function App() {
     if (!bs || !questions.length) return;
     setBatchStudents(prev => prev.map(b => b.id === bsId ? { ...b, isGenerating: true } : b));
     try {
-      const seed = batchStudents.findIndex(b => b.id === bsId) + 1;
+      // Unique seed: combine index + timestamp hash so same-level students get different answers
+      const idx = batchStudents.findIndex(b => b.id === bsId);
+      const seed = idx * 7 + 1 + (parseInt(bsId.replace(/\D/g, "").slice(-4) || "0") % 97);
       const r = await fetch("/api/generate-answers", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1836,6 +2024,19 @@ export default function App() {
     } catch {
       setBatchStudents(prev => prev.map(b => b.id === bsId ? { ...b, isGenerating: false } : b));
     }
+  };
+
+  // Generate ALL batch students sequentially with global progress tracking
+  const generateAllBatchStudents = async () => {
+    const pending = batchStudents.filter(b => !b.isDone && b.profile.name);
+    if (!pending.length || !questions.length) return;
+    setBatchProgress({ done: 0, total: pending.length });
+    for (let i = 0; i < pending.length; i++) {
+      setBatchProgress({ done: i, total: pending.length });
+      await generateBatchStudentAnswers(pending[i].id);
+      setBatchProgress({ done: i + 1, total: pending.length });
+    }
+    setBatchProgress(null);
   };
 
   const generateComments = async () => {
@@ -1864,6 +2065,42 @@ export default function App() {
       }
     } catch (err) { console.error(err); }
     setIsGenComments(false);
+  };
+
+  // ── Generate teacher evaluation note ─────────────────────────────────────
+  const generateTeacherNote = async () => {
+    setIsGenNote(true); setGenNoteErr("");
+    try {
+      // Build a summary prompt and use the comments API or generate-answers with a special question
+      const summaryQ = [{ id: "teacher_note", text: `Rédige un commentaire d'enseignant en 2-3 phrases expliquant pourquoi l'élève ${activeDisplayProfile.name} mérite le niveau ${criteriaLevel}/8 d'après ses réponses. Sois précis, bienveillant et pédagogique. Texte brut uniquement, sans markdown.` }];
+      const r = await fetch("/api/generate-answers", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          questions: summaryQ,
+          criteriaLevel,
+          studentName: "Enseignant",
+          variantSeed: Date.now() % 1000,
+          pdfPagesBase64: [],
+          saveSession: false,
+        }),
+      });
+      const d = await r.json();
+      const noteText = d?.answers?.teacher_note || d?.answers?.[Object.keys(d?.answers ?? {})[0]] || "";
+      if (noteText) {
+        setTeacherNote({
+          text: noteText,
+          x: 5, y: 88,
+          color: DEFAULT_TEACHER_COLOR,
+          fontKey: DEFAULT_TEACHER_FONT,
+          fontSize: DEFAULT_TEACHER_FONTSIZE,
+        });
+      } else {
+        setGenNoteErr(d.error || "Pas de texte généré.");
+      }
+    } catch (e: any) {
+      setGenNoteErr(e?.message || "Erreur réseau");
+    }
+    setIsGenNote(false);
   };
 
   const handleOffsetChange = useCallback((id: string, dx: number, dy: number) => {
@@ -1905,11 +2142,11 @@ export default function App() {
     pComments: TeacherComment[],
   ) => {
     const pages = evalPages.length > 0 ? evalPages : [{ base64: "", pageNum: 1 }];
-    const html = buildPrintHTML(pages, questions, pAnswers, pOffsets, pProfile, pComments, effects, pProfile.name, artImages);
+    const html = buildPrintHTML(pages, questions, pAnswers, pOffsets, pProfile, pComments, effects, pProfile.name, artImages, teacherNote, namePos);
     const w = window.open("", "_blank", "width=900,height=700");
     if (!w) { alert("Autorisez les pop-ups pour imprimer."); return; }
     w.document.open(); w.document.write(html); w.document.close();
-  }, [evalPages, questions, effects, artImages]);
+  }, [evalPages, questions, effects, artImages, teacherNote, namePos]);
 
   const printAllBatch = useCallback(() => {
     const pages = evalPages.length > 0 ? evalPages : [{ base64: "", pageNum: 1 }];
@@ -2140,12 +2377,28 @@ ${nameOv}${buildAnswers(pi)}</div>`;
                           className="flex-1 py-2 border border-dashed border-slate-300 rounded-xl text-xs font-semibold text-slate-500 hover:border-indigo-300 hover:text-indigo-600 hover:bg-indigo-50 transition flex items-center justify-center gap-1">
                           <Plus className="h-3.5 w-3.5" /> Ajouter élève
                         </button>
-                        <button onClick={() => batchStudents.filter(b => !b.isDone && b.profile.name).forEach(b => generateBatchStudentAnswers(b.id))}
-                          disabled={!questions.length}
+                        <button onClick={generateAllBatchStudents}
+                          disabled={!questions.length || !!batchProgress}
                           className="flex-1 py-2 bg-indigo-500 text-white rounded-xl text-xs font-bold hover:bg-indigo-600 transition disabled:opacity-50 flex items-center justify-center gap-1">
-                          <Sparkles className="h-3.5 w-3.5" /> Générer TOUS
+                          {batchProgress ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                          {batchProgress ? `${batchProgress.done}/${batchProgress.total}…` : "Générer TOUS"}
                         </button>
                       </div>
+                      {/* Batch progress bar */}
+                      {batchProgress && (
+                        <div className="space-y-1">
+                          <div className="flex justify-between text-[9px] text-indigo-600 font-bold">
+                            <span>Génération en cours…</span>
+                            <span>{batchProgress.done}/{batchProgress.total} élèves</span>
+                          </div>
+                          <div className="h-2 bg-indigo-100 rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-indigo-500 rounded-full transition-all duration-500"
+                              style={{ width: `${batchProgress.total > 0 ? (batchProgress.done / batchProgress.total) * 100 : 0}%` }}
+                            />
+                          </div>
+                        </div>
+                      )}
                       <p className="text-[10px] text-slate-400">
                         {batchStudents.filter(b => b.isDone).length}/{batchStudents.length} élèves générés
                       </p>
@@ -2561,11 +2814,30 @@ ${nameOv}${buildAnswers(pi)}</div>`;
                           onGenerate={generateBatchStudentAnswers} questions={questions} />
                       ))}
                     </div>
-                    <button onClick={() => batchStudents.filter(b => !b.isDone && b.profile.name).forEach(b => generateBatchStudentAnswers(b.id))}
-                      disabled={!batchStudents.some(b => !b.isDone && b.profile.name)}
+                    <button onClick={generateAllBatchStudents}
+                      disabled={!batchStudents.some(b => !b.isDone && b.profile.name) || !!batchProgress}
                       className="w-full py-3 bg-purple-500 text-white rounded-xl font-bold text-sm hover:bg-purple-600 transition disabled:opacity-50 flex items-center justify-center gap-2">
-                      <Sparkles className="h-4 w-4" /> Générer TOUS les élèves
+                      {batchProgress ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                      {batchProgress ? `Génération ${batchProgress.done}/${batchProgress.total}…` : "Générer TOUS les élèves"}
                     </button>
+                    {/* Batch progress bar */}
+                    {batchProgress && (
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-[10px] text-purple-700 font-bold">
+                          <span>Génération séquentielle en cours…</span>
+                          <span>{batchProgress.done}/{batchProgress.total}</span>
+                        </div>
+                        <div className="h-2.5 bg-purple-100 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-purple-500 rounded-full transition-all duration-500"
+                            style={{ width: `${batchProgress.total > 0 ? (batchProgress.done / batchProgress.total) * 100 : 0}%` }}
+                          />
+                        </div>
+                        <p className="text-[9px] text-purple-500 text-center">
+                          Chaque élève reçoit des réponses uniques adaptées à son niveau
+                        </p>
+                      </div>
+                    )}
                     {batchStudents.some(b => b.isDone) && (
                       <button onClick={() => { setPreviewPage(0); setActiveBatchIdx(0); setStep("preview"); }}
                         className="w-full py-2.5 bg-slate-800 text-white rounded-xl font-bold text-sm hover:bg-slate-900 transition flex items-center justify-center gap-2">
@@ -2700,6 +2972,11 @@ ${nameOv}${buildAnswers(pi)}</div>`;
                       onUpdateShape={handleUpdateShape}
                       selectedShapeId={selectedShapeId}
                       onSelectShape={setSelectedShapeId}
+                      showName={showName}
+                      namePosX={namePos.x} namePosY={namePos.y}
+                      onNameMove={(dx, dy) => setNamePos(p => ({ x: Math.max(0, Math.min(90, p.x + dx)), y: Math.max(0, Math.min(90, p.y + dy)) }))}
+                      teacherNote={teacherNote}
+                      onTeacherNoteMove={(dx, dy) => setTeacherNote(n => n ? { ...n, x: Math.max(0, Math.min(90, n.x + dx)), y: Math.max(0, Math.min(90, n.y + dy)) } : n)}
                     />
                   </div>
 
@@ -2787,17 +3064,83 @@ ${nameOv}${buildAnswers(pi)}</div>`;
                           </div>
                         )}
 
-                        {/* Comments */}
+                        {/* Comments + Teacher Note */}
                         {sidePanel === "comments" && (
-                          <div className="space-y-2">
-                            <p className="text-[9px] font-bold text-red-500 uppercase tracking-wide flex items-center gap-1">
-                              ● Corrections enseignant
-                            </p>
-                            <CommentManager
-                              comments={activeComments} questions={questions} answers={activeAnswers}
-                              onUpdate={handleCommentsUpdate}
-                              onGenerate={generateComments} isGenerating={isGenComments}
-                            />
+                          <div className="space-y-3">
+                            {/* ─ Teacher evaluation note ─ */}
+                            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-2">
+                              <p className="text-[9px] font-bold text-amber-700 uppercase tracking-wide flex items-center gap-1">
+                                🏅 Commentaire d'évaluation (page 1)
+                              </p>
+                              <p className="text-[8px] text-amber-600">Gemini explique pourquoi l'élève mérite sa note. Affiché en bas de la 1ère page, déplaçable librement.</p>
+                              {teacherNote ? (
+                                <div className="space-y-1.5">
+                                  <textarea
+                                    value={teacherNote.text}
+                                    onChange={e => setTeacherNote(n => n ? { ...n, text: e.target.value } : n)}
+                                    rows={3}
+                                    className="w-full border border-amber-200 rounded-lg p-1.5 text-[9px] focus:outline-none focus:border-amber-400 bg-white resize-none"
+                                  />
+                                  <div className="flex gap-1">
+                                    {TEACHER_COLORS.map(c => (
+                                      <button key={c.value} onClick={() => setTeacherNote(n => n ? { ...n, color: c.value } : n)}
+                                        className={`w-4 h-4 rounded-full border-2 ${teacherNote.color === c.value ? "border-slate-700 scale-110" : "border-transparent"}`}
+                                        style={{ background: c.value }} title={c.label} />
+                                    ))}
+                                    <button onClick={() => setTeacherNote(null)}
+                                      className="ml-auto px-1.5 py-0.5 bg-red-50 border border-red-200 rounded text-[8px] text-red-500 font-bold hover:bg-red-100 transition">
+                                      ✕ Supprimer
+                                    </button>
+                                  </div>
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="text-[8px] text-slate-500 w-10 shrink-0">Taille</span>
+                                    <input type="range" min={1.5} max={5} step={0.1}
+                                      value={teacherNote.fontSize}
+                                      onChange={e => setTeacherNote(n => n ? { ...n, fontSize: parseFloat(e.target.value) } : n)}
+                                      className="flex-1 accent-amber-500 h-1" />
+                                    <span className="text-[8px] font-bold text-amber-600 w-6">{teacherNote.fontSize.toFixed(1)}</span>
+                                  </div>
+                                  <p className="text-[8px] text-amber-500">📌 Mode Déplacer → glissez le commentaire sur la page</p>
+                                </div>
+                              ) : (
+                                <div className="space-y-1.5">
+                                  {genNoteErr && <p className="text-[8px] text-red-500">{genNoteErr}</p>}
+                                  <button onClick={generateTeacherNote} disabled={isGenNote || !Object.keys(activeAnswers).some(Boolean)}
+                                    className="w-full py-2 bg-amber-500 text-white rounded-xl font-bold text-[10px] flex items-center justify-center gap-1.5 hover:bg-amber-600 transition disabled:opacity-50">
+                                    {isGenNote ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
+                                    {isGenNote ? "Génération…" : "Générer commentaire Gemini"}
+                                  </button>
+                                  <button onClick={() => setTeacherNote({ text: "Bon travail dans l'ensemble. L'élève démontre une compréhension satisfaisante du sujet.", x: 5, y: 88, color: DEFAULT_TEACHER_COLOR, fontKey: DEFAULT_TEACHER_FONT, fontSize: DEFAULT_TEACHER_FONTSIZE })}
+                                    className="w-full py-1.5 border border-amber-200 rounded-xl text-[9px] font-semibold text-amber-700 hover:bg-amber-100 transition">
+                                    ✏️ Écrire manuellement
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+
+                            {/* ─ Nom élève visible/draggable ─ */}
+                            <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-2.5 space-y-1.5">
+                              <div className="flex items-center justify-between">
+                                <p className="text-[9px] font-bold text-indigo-700">✍️ Nom de l'élève (page 1)</p>
+                                <button onClick={() => setShowName(v => !v)}
+                                  className={`px-2 py-0.5 rounded text-[8px] font-bold transition ${showName ? "bg-indigo-500 text-white" : "border border-slate-300 text-slate-500"}`}>
+                                  {showName ? "Visible" : "Masqué"}
+                                </button>
+                              </div>
+                              {showName && <p className="text-[8px] text-indigo-500">📌 Mode Déplacer → glissez le nom sur la page</p>}
+                            </div>
+
+                            {/* ─ Per-question corrections ─ */}
+                            <div>
+                              <p className="text-[9px] font-bold text-red-500 uppercase tracking-wide flex items-center gap-1 mb-1">
+                                ● Corrections par question
+                              </p>
+                              <CommentManager
+                                comments={activeComments} questions={questions} answers={activeAnswers}
+                                onUpdate={handleCommentsUpdate}
+                                onGenerate={generateComments} isGenerating={isGenComments}
+                              />
+                            </div>
                           </div>
                         )}
 
@@ -2811,11 +3154,16 @@ ${nameOv}${buildAnswers(pi)}</div>`;
                             {shapes.filter(s => s.pageIndex === previewPage).length > 0 && (
                               <div className="pt-2 border-t border-slate-100 space-y-1.5">
                                 <p className="text-[9px] font-bold text-indigo-500 uppercase tracking-wide flex items-center gap-1">
-                                  ★ Cliquer une forme pour la sélectionner (déplacer + rotation)
+                                  ★ Cliquer une forme pour la sélectionner
                                 </p>
                                 {shapes.filter(s => s.pageIndex === previewPage).map(s => {
                                   const isSel = selectedShapeId === s.id;
                                   const rot = s.rotation ?? 0;
+                                  const typeLabel = s.type === "triangle"
+                                    ? `△ ${s.triangleSubtype ? TRIANGLE_SUBTYPES.find(t => t.sub === s.triangleSubtype)?.label ?? s.triangleSubtype : "triangle"}`
+                                    : s.type === "line" ? "📏 Segment"
+                                    : s.type === "circle" ? "⭕ Cercle"
+                                    : "▭ Rectangle";
                                   return (
                                     <div key={s.id}
                                       className={`p-2 rounded-lg border transition cursor-pointer ${
@@ -2823,39 +3171,119 @@ ${nameOv}${buildAnswers(pi)}</div>`;
                                       }`}
                                       onClick={() => setSelectedShapeId(isSel ? null : s.id)}>
                                       <div className="flex items-center gap-1.5">
-                                        <span className="text-[9px] font-bold text-slate-600 flex-1 capitalize">
-                                          {s.type === "line" ? "📏" : s.type === "circle" ? "⭕" : s.type === "rectangle" ? "▭" : "△"}&nbsp;
-                                          {s.type}
-                                        </span>
+                                        <span className="text-[9px] font-bold text-slate-600 flex-1">{typeLabel}</span>
                                         <button onClick={e => { e.stopPropagation(); setShapes(prev => prev.filter(sh => sh.id !== s.id)); if (selectedShapeId === s.id) setSelectedShapeId(null); }}
                                           className="p-0.5 rounded hover:bg-red-50 transition">
                                           <Trash2 className="h-3 w-3 text-red-400" />
                                         </button>
                                       </div>
                                       {isSel && (
-                                        <div className="mt-2 space-y-2">
-                                          {/* Label */}
+                                        <div className="mt-2 space-y-2" onClick={e => e.stopPropagation()}>
+
+                                          {/* ── Editable measures ── */}
+                                          {s.type === "line" && s.x2 !== undefined && s.y2 !== undefined && (
+                                            <div className="flex items-center gap-1.5">
+                                              <span className="text-[9px] text-slate-500 w-14 shrink-0">Longueur</span>
+                                              <input
+                                                type="number" min={0.1} max={50} step={0.1}
+                                                value={s.measureL !== undefined ? s.measureL : parseFloat(lineLength(s.x1,s.y1,s.x2,s.y2))}
+                                                onFocus={e => e.target.select()}
+                                                onChange={e => {
+                                                  const val = parseFloat(e.target.value);
+                                                  if (!isNaN(val) && val > 0) {
+                                                    // Scale x2,y2 to achieve the desired length
+                                                    const dx = s.x2! - s.x1, dy = (s.y2 ?? 0) - s.y1;
+                                                    const curLen = Math.sqrt(dx*dx + dy*dy);
+                                                    if (curLen > 0) {
+                                                      const ratio = (val / 21 * 100) / curLen;
+                                                      handleUpdateShape(s.id, { x2: s.x1 + dx * ratio, y2: s.y1 + dy * ratio, measureL: val });
+                                                    }
+                                                  }
+                                                }}
+                                                className="flex-1 border border-slate-200 rounded px-1.5 py-0.5 text-[9px] focus:outline-none focus:border-indigo-400 bg-white"
+                                              />
+                                              <span className="text-[9px] text-slate-400">cm</span>
+                                            </div>
+                                          )}
+                                          {s.type === "circle" && s.radius !== undefined && (
+                                            <div className="flex items-center gap-1.5">
+                                              <span className="text-[9px] text-slate-500 w-14 shrink-0">Rayon</span>
+                                              <input
+                                                type="number" min={0.5} max={40} step={0.5}
+                                                value={s.measureR !== undefined ? s.measureR : parseFloat((s.radius / 100 * 21).toFixed(1))}
+                                                onFocus={e => e.target.select()}
+                                                onChange={e => {
+                                                  const val = parseFloat(e.target.value);
+                                                  if (!isNaN(val) && val > 0) {
+                                                    handleUpdateShape(s.id, { radius: val / 21 * 100, measureR: val });
+                                                  }
+                                                }}
+                                                className="flex-1 border border-slate-200 rounded px-1.5 py-0.5 text-[9px] focus:outline-none focus:border-indigo-400 bg-white"
+                                              />
+                                              <span className="text-[9px] text-slate-400">cm</span>
+                                            </div>
+                                          )}
+                                          {s.type === "rectangle" && s.x2 !== undefined && s.y2 !== undefined && (
+                                            <>
+                                              <div className="flex items-center gap-1.5">
+                                                <span className="text-[9px] text-slate-500 w-14 shrink-0">Largeur</span>
+                                                <input
+                                                  type="number" min={0.1} max={50} step={0.1}
+                                                  value={s.measureW !== undefined ? s.measureW : parseFloat((Math.abs(s.x2-s.x1)/100*21).toFixed(1))}
+                                                  onFocus={e => e.target.select()}
+                                                  onChange={e => {
+                                                    const val = parseFloat(e.target.value);
+                                                    if (!isNaN(val) && val > 0) {
+                                                      handleUpdateShape(s.id, { x2: s.x1 + val / 21 * 100, measureW: val });
+                                                    }
+                                                  }}
+                                                  className="flex-1 border border-slate-200 rounded px-1.5 py-0.5 text-[9px] focus:outline-none focus:border-indigo-400 bg-white"
+                                                />
+                                                <span className="text-[9px] text-slate-400">cm</span>
+                                              </div>
+                                              <div className="flex items-center gap-1.5">
+                                                <span className="text-[9px] text-slate-500 w-14 shrink-0">Hauteur</span>
+                                                <input
+                                                  type="number" min={0.1} max={50} step={0.1}
+                                                  value={s.measureH !== undefined ? s.measureH : parseFloat((Math.abs((s.y2??0)-s.y1)/141.4*29.7).toFixed(1))}
+                                                  onFocus={e => e.target.select()}
+                                                  onChange={e => {
+                                                    const val = parseFloat(e.target.value);
+                                                    if (!isNaN(val) && val > 0) {
+                                                      handleUpdateShape(s.id, { y2: s.y1 + val / 29.7 * 141.4, measureH: val });
+                                                    }
+                                                  }}
+                                                  className="flex-1 border border-slate-200 rounded px-1.5 py-0.5 text-[9px] focus:outline-none focus:border-indigo-400 bg-white"
+                                                />
+                                                <span className="text-[9px] text-slate-400">cm</span>
+                                              </div>
+                                            </>
+                                          )}
+
+                                          {/* Label override */}
                                           <div className="flex items-center gap-1.5">
-                                            <span className="text-[9px] text-slate-500 w-12 shrink-0">Label</span>
+                                            <span className="text-[9px] text-slate-500 w-14 shrink-0">Étiquette</span>
                                             <input value={s.label || ""}
                                               onChange={e => handleUpdateShape(s.id, { label: e.target.value })}
-                                              className="flex-1 border border-slate-200 rounded px-1.5 py-0.5 text-[9px] focus:outline-none focus:border-indigo-400"
-                                              placeholder="ex: 6 cm" />
+                                              onFocus={e => e.target.select()}
+                                              className="flex-1 border border-slate-200 rounded px-1.5 py-0.5 text-[9px] focus:outline-none focus:border-indigo-400 bg-white"
+                                              placeholder="ex: AB = 6 cm" />
                                           </div>
+
                                           {/* Rotation */}
                                           <div className="flex items-center gap-1.5">
-                                            <span className="text-[9px] text-slate-500 w-12 shrink-0">Rotation</span>
+                                            <span className="text-[9px] text-slate-500 w-14 shrink-0">Rotation</span>
                                             <input type="range" min={-180} max={180} step={1} value={rot}
                                               onChange={e => handleUpdateShape(s.id, { rotation: parseFloat(e.target.value) })}
                                               className="flex-1 accent-indigo-500 h-1.5" />
                                             <span className="text-[9px] font-bold text-indigo-600 w-10 text-right">{rot.toFixed(0)}°</span>
                                           </div>
-                                          {/* Reset rotation */}
                                           <button onClick={() => handleUpdateShape(s.id, { rotation: 0 })}
                                             className="w-full py-1 border border-slate-200 rounded text-[9px] font-semibold text-slate-500 hover:bg-slate-100 transition">
                                             ↺ Réinitialiser rotation
                                           </button>
-                                          {/* Measure toggle for triangle and line */}
+
+                                          {/* Measure toggle */}
                                           {(s.type === "triangle" || s.type === "line") && (
                                             <button onClick={() => handleUpdateShape(s.id, { showMeasure: !(s.showMeasure !== false) })}
                                               className={`w-full py-1 border rounded text-[9px] font-semibold transition ${
@@ -2866,11 +3294,6 @@ ${nameOv}${buildAnswers(pi)}</div>`;
                                               📏 {s.showMeasure !== false ? "Mesures ON" : "Mesures OFF"}
                                             </button>
                                           )}
-                                          {/* Position info */}
-                                          <div className="text-[8px] text-slate-400 font-medium">
-                                            x:{s.x1.toFixed(1)} y:{s.y1.toFixed(1)}
-                                            {s.x2 !== undefined && ` → x2:${s.x2.toFixed(1)} y2:${(s.y2??0).toFixed(1)}`}
-                                          </div>
                                         </div>
                                       )}
                                     </div>
