@@ -1213,7 +1213,7 @@ export default function App() {
   const [artImages, setArtImages]       = useState<Record<number, string>>({});
 
   // Sidebar
-  const [sidePanel, setSidePanel]       = useState<"effects" | "comments" | "geometry" | "art">("effects");
+  const [sidePanel, setSidePanel]       = useState<"effects" | "comments" | "geometry" | "art" | "position">("position");
 
   // Batch preview: which student is shown
   const currentBatch = batchMode ? batchStudents[activeBatchIdx] ?? null : null;
@@ -2098,13 +2098,21 @@ ${allHTML}
 
               {/* Toolbar */}
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <h2 className="text-xl font-black">
+                <h2 className="text-xl font-black flex items-center gap-2">
                   Aperçu
                   {batchMode && currentBatch && (
-                    <span className="ml-2 text-sm font-bold text-purple-600">— {currentBatch.profile.name}</span>
+                    <span className="text-sm font-bold text-purple-600">— {currentBatch.profile.name}</span>
                   )}
-                  {!batchMode && activeProfile.fingerprint && (
-                    <span className="ml-2 text-sm font-bold text-blue-600">✦ {activeProfile.fingerprint.confidenceScore}%</span>
+                  {/* Answer count badge */}
+                  {Object.keys(activeAnswers).length > 0 && (
+                    <span className="text-[10px] font-black bg-green-400 border-2 border-black px-2 py-0.5 rounded-full">
+                      {Object.keys(activeAnswers).length} rép. ✓
+                    </span>
+                  )}
+                  {Object.keys(activeAnswers).length === 0 && (
+                    <span className="text-[10px] font-black bg-red-200 border-2 border-black px-2 py-0.5 rounded-full">
+                      0 réponse
+                    </span>
                   )}
                 </h2>
                 <div className="flex items-center gap-2 flex-wrap">
@@ -2172,6 +2180,23 @@ ${allHTML}
                 </div>
               )}
 
+              {/* No answers warning */}
+              {Object.keys(activeAnswers).length > 0 && questions.filter(q => q.pageIndex === previewPage && activeAnswers[q.id]).length === 0 && (
+                <div className="bg-amber-50 border-2 border-amber-300 rounded-xl px-4 py-2 flex items-center gap-3">
+                  <AlertCircle className="h-4 w-4 text-amber-500 shrink-0" />
+                  <div className="flex-1">
+                    <p className="text-xs font-black text-amber-800">Pas de réponses sur cette page</p>
+                    <p className="text-[10px] text-amber-600">
+                      Les réponses sont sur :&nbsp;
+                      {[...new Set(questions.filter(q => activeAnswers[q.id]).map(q => q.pageIndex + 1))].map(p => (
+                        <button key={p} onClick={() => setPreviewPage(p - 1)}
+                          className="underline font-black mx-0.5 hover:text-amber-900">page {p}</button>
+                      ))}
+                    </p>
+                  </div>
+                </div>
+              )}
+
               {/* Main: page + sidebar */}
               <div className="flex gap-4 items-start">
 
@@ -2197,10 +2222,11 @@ ${allHTML}
                   <div className="bg-white rounded-2xl border-4 border-black shadow-[4px_4px_0_rgba(0,0,0,1)]">
                     <div className="flex border-b-2 border-black">
                       {[
-                        { k: "effects"  as const, label: "Effets",    icon: <Eye className="h-3.5 w-3.5" /> },
-                        { k: "comments" as const, label: "Prof",      icon: <MessageSquare className="h-3.5 w-3.5" /> },
-                        { k: "geometry" as const, label: "Géomét.",   icon: <Triangle className="h-3.5 w-3.5" /> },
-                        { k: "art"      as const, label: "Art",       icon: <Image className="h-3.5 w-3.5" /> },
+                        { k: "position" as const, label: "Pos.",     icon: <Move className="h-3.5 w-3.5" /> },
+                        { k: "effects"  as const, label: "Effets",   icon: <Eye className="h-3.5 w-3.5" /> },
+                        { k: "comments" as const, label: "Prof",     icon: <MessageSquare className="h-3.5 w-3.5" /> },
+                        { k: "geometry" as const, label: "Géo",     icon: <Triangle className="h-3.5 w-3.5" /> },
+                        { k: "art"      as const, label: "Art",      icon: <Image className="h-3.5 w-3.5" /> },
                       ].map(t => (
                         <button key={t.k} onClick={() => setSidePanel(t.k)}
                           className={`flex-1 flex items-center justify-center gap-1 py-2 text-[9px] font-black transition border-r last:border-r-0 border-black
@@ -2211,6 +2237,58 @@ ${allHTML}
                     </div>
 
                     <div className="p-3">
+                      {/* Position control */}
+                      {sidePanel === "position" && (
+                        <div className="space-y-2">
+                          <p className="text-[9px] font-black text-black/40">POSITION DES RÉPONSES</p>
+                          {questions.filter(q => q.pageIndex === previewPage && activeAnswers[q.id]).length === 0 ? (
+                            <div className="py-4 text-center">
+                              <p className="text-[10px] text-black/40 font-bold">Aucune réponse sur cette page</p>
+                              <p className="text-[9px] text-black/25 mt-1">Générez d'abord les réponses</p>
+                            </div>
+                          ) : (
+                            <div className="space-y-2">
+                              <p className="text-[9px] text-black/50">Cliquez sur une réponse pour la sélectionner, ou utilisez les boutons ci-dessous :</p>
+                              {questions.filter(q => q.pageIndex === previewPage && activeAnswers[q.id]).map(q => {
+                                const off = activeOffsets[q.id] ?? { x: 0, y: 0 };
+                                const step10 = 10; // pixels
+                                return (
+                                  <div key={q.id} className="bg-slate-50 border border-black/15 rounded-xl p-2 space-y-1.5">
+                                    <p className="text-[8px] font-black truncate text-black/60">{q.id}: {q.text.substring(0, 35)}…</p>
+                                    <div className="flex items-center justify-center gap-1">
+                                      <div className="grid grid-cols-3 gap-0.5">
+                                        <div />
+                                        <button onClick={() => handleOffsetChange(q.id, 0, -step10)}
+                                          className="w-7 h-7 bg-white border border-black/20 rounded-md text-[10px] font-black hover:bg-yellow-100 flex items-center justify-center">↑</button>
+                                        <div />
+                                        <button onClick={() => handleOffsetChange(q.id, -step10, 0)}
+                                          className="w-7 h-7 bg-white border border-black/20 rounded-md text-[10px] font-black hover:bg-yellow-100 flex items-center justify-center">←</button>
+                                        <button onClick={() => {
+                                          if (batchMode && currentBatch) {
+                                            setBatchStudents(prev => prev.map(b => b.id === currentBatch.id ? { ...b, offsets: { ...b.offsets, [q.id]: { x: 0, y: 0 } } } : b));
+                                          } else setOffsets(prev => ({ ...prev, [q.id]: { x: 0, y: 0 } }));
+                                        }}
+                                          className="w-7 h-7 bg-black text-yellow-400 border border-black rounded-md text-[8px] font-black hover:bg-zinc-800 flex items-center justify-center">○</button>
+                                        <button onClick={() => handleOffsetChange(q.id, step10, 0)}
+                                          className="w-7 h-7 bg-white border border-black/20 rounded-md text-[10px] font-black hover:bg-yellow-100 flex items-center justify-center">→</button>
+                                        <div />
+                                        <button onClick={() => handleOffsetChange(q.id, 0, step10)}
+                                          className="w-7 h-7 bg-white border border-black/20 rounded-md text-[10px] font-black hover:bg-yellow-100 flex items-center justify-center">↓</button>
+                                        <div />
+                                      </div>
+                                      <div className="text-[8px] text-black/40 font-black ml-1">
+                                        <div>x:{Math.round(off.x)}</div>
+                                        <div>y:{Math.round(off.y)}</div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
                       {/* Effects */}
                       {sidePanel === "effects" && (
                         <div className="space-y-2">
@@ -2297,34 +2375,20 @@ ${allHTML}
                     </div>
                   </div>
 
-                  {/* Manual answer editor */}
-                  <div className="bg-white rounded-2xl border-4 border-black p-3 shadow-[4px_4px_0_rgba(0,0,0,1)] space-y-2">
-                    <h3 className="font-black text-xs flex items-center gap-1.5"><Edit3 className="h-3.5 w-3.5" /> Réponses p.{previewPage + 1}</h3>
-                    <div className="space-y-2 max-h-40 overflow-y-auto">
-                      {questions.filter(q => q.pageIndex === previewPage).map(q => (
-                        <div key={q.id}>
-                          <label className="text-[8px] font-black text-black/40 block truncate">{q.text.substring(0, 40)}…</label>
-                          <textarea
-                            value={batchMode && currentBatch ? (currentBatch.answers[q.id] ?? "") : (answers[q.id] ?? "")}
-                            onChange={e => {
-                              if (batchMode && currentBatch) {
-                                setBatchStudents(prev => prev.map(b =>
-                                  b.id === currentBatch.id ? { ...b, answers: { ...b.answers, [q.id]: e.target.value } } : b
-                                ));
-                              } else {
-                                setAnswers(prev => ({ ...prev, [q.id]: e.target.value }));
-                              }
-                            }}
-                            rows={2}
-                            className="w-full border-2 border-black/15 rounded-lg p-1.5 text-[10px] focus:outline-none focus:border-black resize-none mt-0.5"
-                          />
+                  {/* Answers summary — read-only, shown on page */}
+                  {questions.filter(q => q.pageIndex === previewPage && (activeAnswers[q.id] ?? "")).length > 0 && (
+                    <div className="bg-green-50 border-2 border-green-200 rounded-2xl p-3 space-y-1">
+                      <p className="text-[8px] font-black text-green-700 flex items-center gap-1">
+                        <CheckCircle className="h-3 w-3" /> {questions.filter(q => q.pageIndex === previewPage && activeAnswers[q.id]).length} réponse(s) sur la page
+                      </p>
+                      {questions.filter(q => q.pageIndex === previewPage && activeAnswers[q.id]).map(q => (
+                        <div key={q.id} className="text-[8px] text-green-800 truncate pl-1 border-l-2 border-green-300">
+                          <span className="font-black">{q.id}:</span> {(activeAnswers[q.id] ?? "").substring(0, 60)}{(activeAnswers[q.id] ?? "").length > 60 ? "…" : ""}
                         </div>
                       ))}
-                      {questions.filter(q => q.pageIndex === previewPage).length === 0 && (
-                        <p className="text-xs text-black/30 text-center py-2">Aucune question sur cette page</p>
-                      )}
+                      <p className="text-[7px] text-green-600/60 pt-1">Active "Déplacer" pour ajuster la position</p>
                     </div>
-                  </div>
+                  )}
                 </div>
               </div>
 

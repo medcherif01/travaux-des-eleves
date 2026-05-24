@@ -25,9 +25,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       success: true,
       isDemo: true,
       questions: [
-        { id: "demo_q1", text: "Question 1 (mode démo — configurez GEMINI_API_KEY sur Vercel)", pageIndex: 0, x: 10, y: 28 },
-        { id: "demo_q2", text: "Question 2 (mode démo)", pageIndex: 0, x: 10, y: 48 },
-        { id: "demo_q3", text: "Question 3 (mode démo)", pageIndex: 0, x: 10, y: 68 },
+        { id: "demo_q1", text: "Question 1 (mode démo — configurez GEMINI_API_KEY)", pageIndex: 0, x: 8, y: 32, maxWidth: 82 },
+        { id: "demo_q2", text: "Question 2 (mode démo)", pageIndex: 0, x: 8, y: 52, maxWidth: 82 },
+        { id: "demo_q3", text: "Question 3 (mode démo)", pageIndex: 0, x: 8, y: 72, maxWidth: 82 },
       ],
     });
   }
@@ -46,17 +46,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     parts.push({
       text:
-        `Tu es expert en analyse de documents scolaires.\n` +
-        `Analyse ces ${count} page(s) d'évaluation.\n` +
-        `Détecte TOUTES les questions auxquelles l'élève doit écrire une réponse.\n\n` +
-        `Pour chaque question donne:\n` +
-        `- id: identifiant court unique (ex: "q1", "q2a")\n` +
-        `- text: texte complet de la question\n` +
-        `- pageIndex: index page (0 = première)\n` +
-        `- x: % horizontal (0-100) où placer la réponse\n` +
-        `- y: % vertical (0-100) — sur les lignes vides SOUS la question (ajouter 6-10% vs position question)\n\n` +
-        `RÈGLES: Ignorer titres/consignes/en-têtes. Inclure sous-questions (a,b,c). Max 15 questions.\n` +
-        `Retourne JSON {"questions": [...]}`,
+        `Tu es expert en analyse de documents scolaires. Analyse ces ${count} page(s) d'évaluation.\n\n` +
+
+        `OBJECTIF: Trouver TOUTES les zones où l'élève doit écrire une réponse (lignes pointillées, espaces vides, cases "Réponse :", "Calcul :", etc.)\n\n` +
+
+        `Pour chaque zone de réponse, retourne:\n` +
+        `- id: identifiant unique (ex: "q1", "q1a", "q2b") — DOIT correspondre à la vraie question\n` +
+        `- text: texte COMPLET de la question/consigne\n` +
+        `- pageIndex: numéro de page (0 = première page)\n` +
+        `- x: position horizontale % (0-100) du DÉBUT de la zone de réponse (généralement 8-15 pour ligne à gauche)\n` +
+        `- y: position verticale % (0-100) de LA PREMIÈRE LIGNE VIDE où écrire — PAS le texte de la question, mais la ligne pointillée ou l'espace blanc APRÈS\n` +
+        `   EXEMPLES: si "Réponse :" est à y=35%, mettre y=35. Si lignes pointillées commencent à 40%, mettre y=40\n` +
+        `- maxWidth: largeur max en % (généralement 75-85)\n\n` +
+
+        `RÈGLES IMPORTANTES:\n` +
+        `1. Ignorer titres, objectifs, critères, en-têtes\n` +
+        `2. Inclure sous-questions (1a, 1b, 2a...)\n` +
+        `3. y doit pointer sur LA ZONE D'ÉCRITURE, pas le texte de la question\n` +
+        `4. Si plusieurs lignes de réponse, pointer sur la première\n` +
+        `5. Max 20 questions par page\n\n` +
+
+        `Retourne JSON strict: {"questions": [...]}`,
     });
 
     const response = await ai.models.generateContent({
@@ -72,11 +82,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               items: {
                 type: Type.OBJECT,
                 properties: {
-                  id: { type: Type.STRING },
-                  text: { type: Type.STRING },
+                  id:        { type: Type.STRING },
+                  text:      { type: Type.STRING },
                   pageIndex: { type: Type.NUMBER },
-                  x: { type: Type.NUMBER },
-                  y: { type: Type.NUMBER },
+                  x:         { type: Type.NUMBER },
+                  y:         { type: Type.NUMBER },
+                  maxWidth:  { type: Type.NUMBER },
                 },
                 required: ["id", "text", "pageIndex", "x", "y"],
               },
@@ -89,7 +100,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (!response.text) return res.status(500).json({ success: false, error: "Réponse vide." });
     const parsed = JSON.parse(response.text.trim());
-    return res.status(200).json({ success: true, questions: parsed.questions || [] });
+    const questions = (parsed.questions || []).map((q: any) => ({
+      ...q,
+      x:        Math.max(1,  Math.min(40,  Number(q.x)        || 8)),
+      y:        Math.max(5,  Math.min(95,  Number(q.y)        || 30)),
+      maxWidth: Math.max(40, Math.min(90,  Number(q.maxWidth) || 82)),
+    }));
+    return res.status(200).json({ success: true, questions });
   } catch (err: any) {
     console.error("detect-questions:", err.message);
     return res.status(500).json({ success: false, error: err.message });
