@@ -1,50 +1,80 @@
 /**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- *
- * nanobanana PRO — Application principale
- * Workflow: Import éval → Gemini lit questions → Génère réponses → Overlay sur pages → Impression
+ * @license SPDX-License-Identifier: Apache-2.0
+ * nanobanana PRO — Workflow évaluation manuscrite ultra-réaliste
+ * Deep Handwriting Fidelity Engine v2 — letter-level fingerprint reproduction
  */
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
-  Upload,
-  FileText,
-  Sparkles,
-  Download,
-  RotateCcw,
-  CheckCircle,
-  AlertCircle,
-  Edit3,
-  RefreshCw,
-  User,
-  Users,
-  Plus,
-  Trash2,
-  ChevronLeft,
-  ChevronRight,
-  Search,
-  Save,
-  Printer,
-  Eye,
-  Settings,
-  Move,
-  BookOpen,
+  Upload, FileText, Sparkles, RotateCcw, CheckCircle, AlertCircle,
+  Edit3, RefreshCw, User, Users, Plus, Trash2, ChevronLeft, ChevronRight,
+  Search, Save, Printer, Move, BookOpen, Zap, Sliders, Eye,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { PRELOADED_TEMPLATES, RUBRIC_ANSWERS, EXAM_CRITERIA_LEVELS } from "./templates";
-import { CriteriaLevel, WorksheetQuestion } from "./types";
+import { CriteriaLevel } from "./types";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TYPES
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Deep handwriting fingerprint — populated from Gemini Vision analysis
+ * of the student's actual handwriting sample.
+ */
+interface HandwritingFingerprint {
+  // Font / color
+  suggestedFont: string;
+  suggestedColor: string;          // hex or named colour
+
+  // Sizing
+  suggestedSize: number;           // base font-size in px
+  letterSpacingEm: number;        // em — spacing between letters
+  wordSpacingPx: number;          // px — spacing between words
+  lineHeightMultiplier: number;   // relative to fontSize
+
+  // Geometry
+  suggestedRotation: number;      // global slant (°) — negative = right lean
+  baselineWobbleAmp: number;      // px — vertical offset per line
+  baselineWobbleFreq: number;     // sin frequency factor
+  letterRotVariance: number;      // ° — per-letter random rotation
+  letterYVariance: number;        // px — per-letter vertical jitter
+  letterXVariance: number;        // px — per-letter horizontal jitter
+
+  // Ink & pressure
+  penThickness: number;           // stroke weight multiplier
+  inkOpacityMin: number;          // lightest pressure opacity
+  inkOpacityMax: number;          // heaviest pressure opacity
+  inkDrySkipRate: number;         // fraction of letters that appear faded
+  inkBleedRadius: number;         // SVG blur radius for ink spread
+
+  // Deformation
+  messinessIntensity: number;     // 0–6 sloppiness
+  letterSizeVariance: number;     // px — size variance per letter
+  letterCaseChaos: boolean;       // wrong-case occasional letters
+  enableUnreadableLetters: boolean;
+
+  // Inferred realism presets
+  inferredRaturesRate: number;
+  inferredBlancoRate: number;
+  inferredSmudgeFreq: number;
+
+  // Unique 16-value shape fingerprint — used as seed offsets per letter
+  letterShapeFingerprint: number[];
+
+  // Meta
+  analysisDescription: string;
+  confidenceScore: number;
+}
+
 interface StudentProfile {
   _id?: string;
   name: string;
-  hwImage: string | null;       // base64 for display
-  hwImageBase64?: string;       // alias for MongoDB field
+  hwImage: string | null;         // base64 displayed in UI
+  hwImageBase64?: string;         // stored in MongoDB
   hwImageName: string;
+
+  // ── Rendering params (from fingerprint OR manual overrides)
   fontKey: string;
   inkColor: string;
   fontSize: number;
@@ -59,6 +89,21 @@ interface StudentProfile {
   penThickness: number;
   penType: "ballpoint" | "gel" | "felt" | "pencil";
   pencilHardness: "HB" | "2B" | "4B" | "2H";
+
+  // ── Realism effects
+  enableRatures: boolean;
+  raturesRate: number;
+  enableBlanco: boolean;
+  blancoRate: number;
+  enableSmudges: boolean;
+  enablePressureVar: boolean;
+  enableLineWobble: boolean;
+  lineWobbleAmp: number;
+
+  // ── Deep fingerprint (set after Gemini Vision analysis)
+  fingerprint?: HandwritingFingerprint;
+
+  // ── Meta
   analysisDescription?: string;
   confidenceScore?: number;
 }
@@ -67,8 +112,9 @@ interface DetectedQuestion {
   id: string;
   text: string;
   pageIndex: number;
-  x: number;   // % from left
-  y: number;   // % from top
+  x: number;
+  y: number;
+  maxWidth?: number;
 }
 
 interface EvalPage {
@@ -76,7 +122,6 @@ interface EvalPage {
   pageNum: number;
 }
 
-// Workflow step
 type WorkflowStep = "import" | "students" | "grade" | "solve" | "preview" | "print";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -84,372 +129,110 @@ type WorkflowStep = "import" | "students" | "grade" | "solve" | "preview" | "pri
 // ─────────────────────────────────────────────────────────────────────────────
 
 const HANDWRITING_FONTS = [
-  { key: "homemade-apple",  label: "Écolier Naturel",    family: "Homemade Apple",   cssVar: "--font-homemade"   },
-  { key: "marck-script",    label: "Cursive Feutre",      family: "Marck Script",     cssVar: "--font-marck"     },
-  { key: "parisienne",      label: "Cursive Fine",        family: "Parisienne",       cssVar: "--font-parisienne" },
-  { key: "allura",          label: "Cursive Fluide",      family: "Allura",           cssVar: "--font-allura"    },
-  { key: "la-belle-aurore", label: "Cursive Stylée",      family: "La Belle Aurore",  cssVar: "--font-la-belle"  },
-  { key: "bad-script",      label: "Écriture Plume",      family: "Bad Script",       cssVar: "--font-badscript" },
+  { key: "homemade-apple",  label: "Écolier Naturel",  family: "Homemade Apple",  cssVar: "--font-homemade"   },
+  { key: "marck-script",    label: "Cursive Feutre",   family: "Marck Script",    cssVar: "--font-marck"     },
+  { key: "parisienne",      label: "Cursive Fine",     family: "Parisienne",      cssVar: "--font-parisienne" },
+  { key: "allura",          label: "Cursive Fluide",   family: "Allura",          cssVar: "--font-allura"    },
+  { key: "la-belle-aurore", label: "Cursive Stylée",   family: "La Belle Aurore", cssVar: "--font-la-belle"  },
+  { key: "bad-script",      label: "Écriture Plume",   family: "Bad Script",      cssVar: "--font-badscript" },
 ];
 
 const INK_COLORS = [
-  { label: "Bleu stylo",   value: "#1d3278" },
-  { label: "Bleu royal",   value: "#1e40af" },
-  { label: "Bleu marine",  value: "#172554" },
-  { label: "Noir encre",   value: "#1c1c1e" },
-  { label: "Noir profond", value: "#0a0a0a" },
+  { label: "Bleu stylo",     value: "#1d3278" },
+  { label: "Bleu royal",     value: "#1e40af" },
+  { label: "Bleu marine",    value: "#172554" },
+  { label: "Noir encre",     value: "#1c1c1e" },
+  { label: "Noir profond",   value: "#0a0a0a" },
   { label: "Rouge bordeaux", value: "#be0000" },
-  { label: "Vert forêt",  value: "#0a7a2a" },
-  { label: "Violet",       value: "#6b21a8" },
-  { label: "Bleu-vert",    value: "#0e7490" },
-  { label: "Brun sépia",   value: "#78350f" },
-  { label: "Gris foncé",   value: "#374151" },
-  { label: "Indigo",       value: "#3730a3" },
+  { label: "Vert forêt",    value: "#0a7a2a" },
+  { label: "Violet",         value: "#6b21a8" },
+  { label: "Bleu-vert",      value: "#0e7490" },
+  { label: "Brun sépia",     value: "#78350f" },
+  { label: "Gris foncé",     value: "#374151" },
+  { label: "Indigo",         value: "#3730a3" },
 ];
 
-function getFontFamily(key: string): string {
-  return HANDWRITING_FONTS.find(f => f.key === key)?.family || "Homemade Apple";
-}
-function getFontVar(key: string): string {
-  return HANDWRITING_FONTS.find(f => f.key === key)?.cssVar || "--font-homemade";
-}
+function getFontVar(key: string) { return HANDWRITING_FONTS.find(f => f.key === key)?.cssVar ?? "--font-homemade"; }
+function getFontFamily(key: string) { return HANDWRITING_FONTS.find(f => f.key === key)?.family ?? "Homemade Apple"; }
+
+const FONT_KEY_MAP: Record<string, string> = {
+  "homemade apple": "homemade-apple",
+  "marck script":   "marck-script",
+  parisienne:       "parisienne",
+  allura:           "allura",
+  "la belle aurore":"la-belle-aurore",
+  "bad script":     "bad-script",
+};
+const COLOR_MAP: Record<string, string> = {
+  blue: "#1d3278", black: "#1c1c1e", red: "#be0000", green: "#0a7a2a",
+};
 
 function defaultProfile(name = "Élève 1"): StudentProfile {
   return {
-    name,
-    hwImage: null,
-    hwImageBase64: "",
-    hwImageName: "",
-    fontKey: "homemade-apple",
-    inkColor: "#1d3278",
-    fontSize: 18,
-    rotationAngle: -0.5,
-    skewAngle: -3,
-    wordDrift: 1.5,
-    letterSpacing: -0.5,
-    messinessIntensity: 2.5,
-    enableUnreadableLetters: true,
-    letterCaseChaos: true,
-    inkDrySkipping: true,
-    penThickness: 1.5,
-    penType: "ballpoint",
-    pencilHardness: "HB",
+    name, hwImage: null, hwImageBase64: "", hwImageName: "",
+    fontKey: "homemade-apple", inkColor: "#1d3278",
+    fontSize: 17, rotationAngle: -0.5, skewAngle: -3,
+    wordDrift: 1.5, letterSpacing: -0.5, messinessIntensity: 2.5,
+    enableUnreadableLetters: true, letterCaseChaos: true,
+    inkDrySkipping: true, penThickness: 1.5,
+    penType: "ballpoint", pencilHardness: "HB",
+    enableRatures: true, raturesRate: 0.04,
+    enableBlanco: false, blancoRate: 0.02,
+    enableSmudges: true, enablePressureVar: true,
+    enableLineWobble: true, lineWobbleAmp: 1.8,
   };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DETERMINISTIC HASH
+// DETERMINISTIC HASH — reproducible per-student per-letter deformations
 // ─────────────────────────────────────────────────────────────────────────────
-function deterministicHash(str: string, index = 0): number {
-  let hash = 0;
-  const combined = str + index;
-  for (let i = 0; i < combined.length; i++) {
-    hash = (hash << 5) - hash + combined.charCodeAt(i);
-    hash |= 0;
-  }
-  return Math.abs(hash) / 2147483647;
+function dHash(str: string, idx = 0): number {
+  let h = 0;
+  const s = str + idx;
+  for (let i = 0; i < s.length; i++) { h = (h << 5) - h + s.charCodeAt(i); h |= 0; }
+  return Math.abs(h) / 2_147_483_647;
 }
-
-function studentSeed(studentName: string, qId: string, index = 0): number {
-  return deterministicHash(studentName + "_" + qId + "_" + index, index);
+function sSeed(a: string, b: string | number, idx = 0): number {
+  return dHash(`${a}_${b}_${idx}`, idx);
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// HANDWRITING RENDERER
-// ─────────────────────────────────────────────────────────────────────────────
-function renderDeformedText(
-  text: string,
-  qId: string,
-  profile: StudentProfile,
-  variantSeed: number
-): React.ReactNode {
-  if (!text) return null;
-
-  const seed = studentSeed(profile.name + variantSeed, qId);
-  const fontList = HANDWRITING_FONTS.map(f => f.key);
-  const fontKey = fontList[Math.floor(seed * fontList.length)];
-  const rotation = profile.rotationAngle + (seed * 4 - 2);
-  const fontSize = Math.max(12, profile.fontSize + (seed * 2.5 - 1.2));
-  const slant = profile.skewAngle + (seed * 5 - 2.5);
-
-  const inkCol = profile.inkColor;
-
-  const lines = text.split("\n");
-  return (
-    <div
-      className="flex flex-col ink-soaking select-none"
-      style={{ lineHeight: `${fontSize * 1.55}px` }}
-    >
-      {lines.map((line, lineIdx) => {
-        const words = line.split(/\s+/).filter(w => w.length > 0);
-        return (
-          <div key={lineIdx} className="flex flex-wrap items-center">
-            {words.map((word, wordIdx) => {
-              const wSeed = studentSeed(profile.name + word, lineIdx * 100 + wordIdx + (qId.charCodeAt(0) || 0));
-              const baseWordY = (wSeed - 0.5) * 2 * profile.wordDrift;
-              const baseWordRot = (wSeed * 0.8 - 0.4) * 0.5;
-
-              const letters = word.split("").map((char, charIdx) => {
-                const cSeed = studentSeed(profile.name + char, wordIdx * 100 + charIdx + lineIdx * 1000);
-                let finalChar = char;
-                if (profile.letterCaseChaos && cSeed > 0.87 && char.toLowerCase() !== char.toUpperCase()) {
-                  finalChar = cSeed > 0.93 ? char.toUpperCase() : char;
-                }
-                const letterY = (cSeed - 0.5) * profile.messinessIntensity * 2.2;
-                const letterX = (cSeed * 0.6 - 0.3) * profile.messinessIntensity * 1.3;
-                const letterSkew = slant + (cSeed - 0.5) * profile.messinessIntensity * 4.5;
-                const letterSizeMod = (cSeed * 0.8 - 0.4) * profile.messinessIntensity * 1.4;
-                const letterRot = (cSeed - 0.5) * profile.messinessIntensity * 5.5;
-                let opacity = 1;
-                if (profile.inkDrySkipping && cSeed < 0.12) {
-                  opacity = 0.45 + cSeed * 2.0;
-                }
-                return (
-                  <span
-                    key={charIdx}
-                    style={{
-                      display: "inline-block",
-                      transform: `translate(${letterX}px, ${letterY}px) rotate(${letterRot}deg) skewX(${letterSkew}deg)`,
-                      fontSize: `${Math.max(9, fontSize + letterSizeMod)}px`,
-                      opacity,
-                      marginLeft: charIdx === 0 ? "0px" : `${profile.letterSpacing + (cSeed - 0.5) * 1.2}px`,
-                      fontFamily: `var(${getFontVar(fontKey)})`,
-                      WebkitTextStroke: profile.penThickness > 1.1 ? `${(profile.penThickness - 1.1) * 0.35}px ${inkCol}` : "0px",
-                      color: inkCol,
-                      textShadow: `0.1px 0.1px 0.1px rgba(0,0,0,0.15)`,
-                    }}
-                    className="select-none inline-block"
-                  >
-                    {finalChar}
-                  </span>
-                );
-              });
-
-              return (
-                <span
-                  key={wordIdx}
-                  style={{
-                    display: "inline-block",
-                    transform: `translateY(${baseWordY}px) rotate(${baseWordRot}deg)`,
-                    marginRight: `${6 + (wSeed - 0.5) * 5 + profile.messinessIntensity * 1.5}px`,
-                    whiteSpace: "nowrap",
-                  }}
-                  className="inline-block"
-                >
-                  {letters}
-                </span>
-              );
-            })}
-            {words.length === 0 && <div style={{ height: `${fontSize}px` }} />}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ANSWER OVERLAY — draggable answer block placed on eval page
-// ─────────────────────────────────────────────────────────────────────────────
-interface AnswerOverlayProps {
-  question: DetectedQuestion;
-  answer: string;
-  profile: StudentProfile;
-  variantSeed: number;
-  editMode: boolean;
-  onPositionChange: (qId: string, dx: number, dy: number) => void;
-  customOffset: { x: number; y: number };
-}
-
-function AnswerOverlay({ question, answer, profile, variantSeed, editMode, onPositionChange, customOffset }: AnswerOverlayProps) {
-  const dragging = useRef(false);
-  const dragStart = useRef({ x: 0, y: 0 });
-
-  const handleMouseDown = (e: React.MouseEvent) => {
-    if (!editMode) return;
-    dragging.current = true;
-    dragStart.current = { x: e.clientX, y: e.clientY };
-    e.preventDefault();
-  };
-
-  const handleMouseMove = useCallback((e: MouseEvent) => {
-    if (!dragging.current) return;
-    const dx = e.clientX - dragStart.current.x;
-    const dy = e.clientY - dragStart.current.y;
-    onPositionChange(question.id, dx, dy);
-    dragStart.current = { x: e.clientX, y: e.clientY };
-  }, [question.id, onPositionChange]);
-
-  const handleMouseUp = useCallback(() => { dragging.current = false; }, []);
-
-  useEffect(() => {
-    window.addEventListener("mousemove", handleMouseMove);
-    window.addEventListener("mouseup", handleMouseUp);
-    return () => {
-      window.removeEventListener("mousemove", handleMouseMove);
-      window.removeEventListener("mouseup", handleMouseUp);
-    };
-  }, [handleMouseMove, handleMouseUp]);
-
-  const left = `${question.x}%`;
-  const top = `${question.y}%`;
-
-  return (
-    <div
-      style={{
-        position: "absolute",
-        left,
-        top,
-        transform: `translate(${customOffset.x}px, ${customOffset.y}px)`,
-        cursor: editMode ? "move" : "default",
-        zIndex: 10,
-        maxWidth: "80%",
-        userSelect: "none",
-      }}
-      onMouseDown={handleMouseDown}
-    >
-      {editMode && (
-        <div style={{
-          position: "absolute",
-          top: -18,
-          left: 0,
-          fontSize: 9,
-          background: "#3b82f6",
-          color: "white",
-          padding: "1px 5px",
-          borderRadius: 4,
-          whiteSpace: "nowrap",
-          pointerEvents: "none",
-        }}>
-          ✥ {question.id}
-        </div>
-      )}
-      {renderDeformedText(answer, question.id, profile, variantSeed)}
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// EVAL PAGE VIEWER — shows one evaluation page with answer overlays
-// ─────────────────────────────────────────────────────────────────────────────
-interface EvalPageViewerProps {
-  page: EvalPage;
-  questions: DetectedQuestion[];
-  answers: Record<string, string>;
-  profile: StudentProfile;
-  variantSeed: number;
-  editMode: boolean;
-  offsets: Record<string, { x: number; y: number }>;
-  onOffsetChange: (qId: string, dx: number, dy: number) => void;
-  isRealUpload: boolean;
-}
-
-function EvalPageViewer({
-  page,
-  questions,
-  answers,
-  profile,
-  variantSeed,
-  editMode,
-  offsets,
-  onOffsetChange,
-  isRealUpload,
-}: EvalPageViewerProps) {
-  const pageQuestions = questions.filter(q => q.pageIndex === page.pageNum - 1);
-
-  return (
-    <div
-      className="relative bg-white shadow-2xl"
-      style={{
-        width: "100%",
-        aspectRatio: "210/297", // A4
-        overflow: "hidden",
-      }}
-    >
-      {/* Background: real eval page — NO decorations added */}
-      {isRealUpload ? (
-        <img
-          src={page.base64}
-          alt={`Page ${page.pageNum}`}
-          style={{
-            position: "absolute",
-            inset: 0,
-            width: "100%",
-            height: "100%",
-            objectFit: "contain",
-            pointerEvents: "none",
-          }}
-        />
-      ) : (
-        <img
-          src={page.base64}
-          alt={`Page ${page.pageNum}`}
-          style={{
-            position: "absolute",
-            inset: 0,
-            width: "100%",
-            height: "100%",
-            objectFit: "contain",
-            pointerEvents: "none",
-          }}
-        />
-      )}
-
-      {/* Answer overlays — placed directly on evaluation pages */}
-      {pageQuestions.map(q => {
-        const answer = answers[q.id];
-        if (!answer) return null;
-        return (
-          <AnswerOverlay
-            key={q.id}
-            question={q}
-            answer={answer}
-            profile={profile}
-            variantSeed={variantSeed}
-            editMode={editMode}
-            onPositionChange={onOffsetChange}
-            customOffset={offsets[q.id] || { x: 0, y: 0 }}
-          />
-        );
-      })}
-    </div>
-  );
+/** Inject the student's shape fingerprint as an additional offset layer */
+function fpOffset(fp: number[] | undefined, index: number): number {
+  if (!fp || fp.length < 16) return 0;
+  return (fp[index % 16] - 0.5) * 2; // −1 … +1
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // STEP INDICATOR
 // ─────────────────────────────────────────────────────────────────────────────
-const STEPS: { key: WorkflowStep; label: string; icon: React.ReactNode }[] = [
-  { key: "import",   label: "Importer",  icon: <Upload className="h-4 w-4" /> },
-  { key: "students", label: "Élève",     icon: <User className="h-4 w-4" /> },
-  { key: "grade",    label: "Note",      icon: <BookOpen className="h-4 w-4" /> },
-  { key: "solve",    label: "Résoudre",  icon: <Sparkles className="h-4 w-4" /> },
-  { key: "preview",  label: "Aperçu",    icon: <Eye className="h-4 w-4" /> },
-  { key: "print",    label: "Imprimer",  icon: <Printer className="h-4 w-4" /> },
+const STEPS: { key: WorkflowStep; label: string }[] = [
+  { key: "import",   label: "Importer"  },
+  { key: "students", label: "Élève"     },
+  { key: "grade",    label: "Note"      },
+  { key: "solve",    label: "Résoudre"  },
+  { key: "preview",  label: "Aperçu"    },
+  { key: "print",    label: "Imprimer"  },
 ];
 
-function StepIndicator({ current, onGoTo }: { current: WorkflowStep; onGoTo: (s: WorkflowStep) => void }) {
-  const currentIdx = STEPS.findIndex(s => s.key === current);
+function StepBar({ current, onGoto }: { current: WorkflowStep; onGoto: (s: WorkflowStep) => void }) {
+  const ci = STEPS.findIndex(s => s.key === current);
   return (
-    <div className="flex items-center justify-center gap-1 flex-wrap py-2">
-      {STEPS.map((step, idx) => {
-        const isActive = step.key === current;
-        const isDone = idx < currentIdx;
+    <div className="flex items-center justify-center gap-1 flex-wrap py-2 px-4">
+      {STEPS.map((s, i) => {
+        const active = s.key === current;
+        const done = i < ci;
         return (
-          <React.Fragment key={step.key}>
+          <React.Fragment key={s.key}>
             <button
-              onClick={() => isDone && onGoTo(step.key)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border-2 text-xs font-black transition-all
-                ${isActive ? "bg-yellow-400 border-black text-black shadow-[3px_3px_0_0_rgba(0,0,0,1)]" :
-                  isDone ? "bg-black border-black text-yellow-400 cursor-pointer hover:bg-zinc-800" :
-                  "bg-white border-black/20 text-black/40 cursor-not-allowed"}`}
+              onClick={() => done && onGoto(s.key)}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-xl border-2 text-[11px] font-black transition-all
+                ${active ? "bg-yellow-400 border-black text-black shadow-[2px_2px_0_rgba(0,0,0,1)]" :
+                  done   ? "bg-black border-black text-yellow-400 cursor-pointer" :
+                           "bg-white border-black/20 text-black/30 cursor-not-allowed"}`}
             >
-              {isDone ? <CheckCircle className="h-3.5 w-3.5" /> : step.icon}
-              <span className="hidden sm:inline">{step.label}</span>
+              {done ? <CheckCircle className="h-3 w-3" /> : null}
+              {s.label}
             </button>
-            {idx < STEPS.length - 1 && (
-              <div className={`h-0.5 w-4 ${idx < currentIdx ? "bg-black" : "bg-black/20"}`} />
-            )}
+            {i < STEPS.length - 1 && <div className={`w-4 h-0.5 ${i < ci ? "bg-black" : "bg-black/15"}`} />}
           </React.Fragment>
         );
       })}
@@ -458,222 +241,687 @@ function StepIndicator({ current, onGoTo }: { current: WorkflowStep; onGoTo: (s:
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// HANDWRITTEN TEXT — pixel-accurate reproduction of the student's handwriting
+// Uses the deep fingerprint when available, falls back to profile params.
+// ─────────────────────────────────────────────────────────────────────────────
+function HandwrittenText({
+  text, qId, profile, variantSeed,
+}: {
+  text: string;
+  qId: string;
+  profile: StudentProfile;
+  variantSeed: number;
+}) {
+  if (!text) return null;
+
+  const fp = profile.fingerprint;
+
+  // ── Resolve rendering parameters (fingerprint wins over manual if available + high confidence)
+  const useFingerprint = !!fp && (fp.confidenceScore ?? 0) >= 55;
+
+  const baseSeed   = sSeed(profile.name + variantSeed, qId);
+  const fontSize   = useFingerprint
+    ? Math.max(11, fp.suggestedSize + (baseSeed * 1.5 - 0.75))
+    : Math.max(11, profile.fontSize + (baseSeed * 2 - 1));
+  const globalSlant = useFingerprint ? fp.suggestedRotation : profile.skewAngle;
+  const inkCol     = profile.inkColor; // always from profile (user can override)
+  const fontKey    = profile.fontKey;
+
+  const wobbleAmp  = useFingerprint ? fp.baselineWobbleAmp  : profile.lineWobbleAmp;
+  const wobbleFreq = useFingerprint ? fp.baselineWobbleFreq : 2.1;
+  const opacMin    = useFingerprint ? fp.inkOpacityMin  : 0.72;
+  const opacMax    = useFingerprint ? fp.inkOpacityMax  : 1.0;
+  const dryRate    = useFingerprint ? fp.inkDrySkipRate : 0.06;
+  const lRotVar    = useFingerprint ? fp.letterRotVariance  : profile.messinessIntensity * 1.8;
+  const lYVar      = useFingerprint ? fp.letterYVariance    : profile.messinessIntensity * 0.6;
+  const lXVar      = useFingerprint ? fp.letterXVariance    : profile.messinessIntensity * 0.2;
+  const lSzVar     = useFingerprint ? fp.letterSizeVariance : profile.messinessIntensity * 0.35;
+  const lSpEm      = useFingerprint ? fp.letterSpacingEm    : profile.letterSpacing / 17;
+  const wSpPx      = useFingerprint ? fp.wordSpacingPx      : (5 + profile.messinessIntensity);
+  const lHeight    = useFingerprint ? fp.lineHeightMultiplier : 1.6;
+  const caseChaos  = useFingerprint ? fp.letterCaseChaos   : profile.letterCaseChaos;
+  const unreadable = useFingerprint ? fp.enableUnreadableLetters : profile.enableUnreadableLetters;
+  const messiness  = useFingerprint ? fp.messinessIntensity : profile.messinessIntensity;
+
+  const lines = text.split("\n");
+
+  return (
+    <div className="select-none" style={{ lineHeight: `${fontSize * lHeight}px` }}>
+      {lines.map((line, li) => {
+        const words = line.split(/\s+/).filter(Boolean);
+
+        // ── Baseline wobble for this line (fingerprint-aware)
+        const fpWobble = fp ? fpOffset(fp.letterShapeFingerprint, li + 8) * 0.6 : 0;
+        const lineWobble = profile.enableLineWobble
+          ? Math.sin(li * wobbleFreq + baseSeed * 6) * wobbleAmp + fpWobble
+          : 0;
+
+        return (
+          <div key={li} className="flex flex-wrap" style={{ transform: `translateY(${lineWobble}px)` }}>
+            {words.map((word, wi) => {
+              // Word-level seed: name + word text + position for determinism
+              const wSeed = sSeed(profile.name + word + li, wi + variantSeed * 3);
+              // Use fingerprint slot to perturb word Y (makes it match real writing)
+              const fpWordY = fp ? fpOffset(fp.letterShapeFingerprint, wi % 16) * 0.8 : 0;
+              const wordY   = (wSeed - 0.5) * 2 * Math.min(messiness, 5) * 0.35 + fpWordY;
+              const wordRot = (wSeed * 0.6 - 0.3) * Math.min(messiness, 5) * 0.12;
+              const wordMarginR = Math.max(2, wSpPx + (wSeed - 0.5) * 3);
+
+              const letters = word.split("").map((ch, ci) => {
+                const cs = sSeed(profile.name + ch + wi, ci + li * 100 + variantSeed);
+                // Fingerprint slot for this letter position
+                const fpSlot = fp ? fp.letterShapeFingerprint[(ci + wi * 3) % 16] : 0.5;
+                // Blend cs with fingerprint slot for uniqueness matching the real sample
+                const csFp = cs * 0.6 + fpSlot * 0.4;
+
+                // ── Letter character
+                let finalCh = ch;
+                if (caseChaos && csFp > 0.88 && ch.toLowerCase() !== ch.toUpperCase()) {
+                  finalCh = csFp > 0.94 ? ch.toUpperCase() : ch;
+                }
+                if (unreadable && messiness > 4 && cs > 0.93) {
+                  const squiggles = ["ɑ", "ε", "ɳ", "ɯ", "ʋ", "ɹ"];
+                  finalCh = squiggles[Math.floor(cs * squiggles.length)] ?? ch;
+                }
+
+                // ── Per-letter geometry (fingerprint-modulated)
+                const ly   = (csFp - 0.5) * lYVar * 2;
+                const lx   = (csFp * 0.5 - 0.25) * lXVar * 2;
+                // Slant combines global angle + per-letter variance + fingerprint lean
+                const fpLean = fp ? fpOffset(fp.letterShapeFingerprint, (ci * 2 + wi) % 16) * 1.2 : 0;
+                const lSkew = globalSlant + (csFp - 0.5) * lRotVar * 0.7 + fpLean;
+                const lRot  = (csFp - 0.5) * lRotVar * 0.5;
+                const lSize = (csFp * 0.7 - 0.35) * lSzVar * 2;
+
+                // ── Ink pressure / opacity
+                let opacity = 1;
+                if (profile.enablePressureVar) {
+                  // pressure oscillates naturally: use sin of position + fingerprint
+                  const pressureCycle = Math.sin(ci * 0.8 + baseSeed * 4) * 0.5 + 0.5;
+                  const fpPressure = fp ? fp.letterShapeFingerprint[(ci + 4) % 16] : 0.5;
+                  const blended = pressureCycle * 0.5 + fpPressure * 0.3 + csFp * 0.2;
+                  opacity = opacMin + blended * (opacMax - opacMin);
+                }
+                // Ink dry skip — sporadic faded letters
+                if (profile.inkDrySkipping && cs < dryRate) {
+                  opacity = Math.max(0.28, opacity * (0.3 + cs * 4));
+                }
+
+                // ── Stroke weight (pressure → thickness)
+                const strokeW = profile.enablePressureVar && profile.penThickness > 1.0
+                  ? `${(profile.penThickness - 1) * 0.25 * opacity}px`
+                  : "0px";
+
+                return (
+                  <span
+                    key={ci}
+                    style={{
+                      display:        "inline-block",
+                      transform:      `translate(${lx}px,${ly}px) rotate(${lRot}deg) skewX(${lSkew}deg)`,
+                      fontSize:       `${Math.max(9, fontSize + lSize)}px`,
+                      opacity,
+                      letterSpacing:  ci === 0 ? 0 : `${lSpEm + (csFp - 0.5) * 0.04}em`,
+                      fontFamily:     `var(${getFontVar(fontKey)})`,
+                      color:          inkCol,
+                      WebkitTextStroke: strokeW !== "0px" ? `${strokeW} ${inkCol}` : undefined,
+                      textShadow:     opacity > 0.85
+                        ? `0.15px 0.2px 0.3px rgba(0,0,0,0.22)`
+                        : `0.05px 0.08px 0.12px rgba(0,0,0,0.12)`,
+                    }}
+                  >
+                    {finalCh}
+                  </span>
+                );
+              });
+
+              return (
+                <span
+                  key={wi}
+                  style={{
+                    display:     "inline-block",
+                    transform:   `translateY(${wordY}px) rotate(${wordRot}deg)`,
+                    marginRight: `${wordMarginR}px`,
+                    whiteSpace:  "nowrap",
+                  }}
+                >
+                  {letters}
+                </span>
+              );
+            })}
+            {words.length === 0 && <span style={{ display: "block", height: `${fontSize}px` }} />}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SVG REALISM EFFECTS — ratures, blanco, smudges
+// All effects are deterministic: same student + same answer = same marks
+// ─────────────────────────────────────────────────────────────────────────────
+function PageRealism({
+  pi, pageQ, answers, profile, variantSeed,
+}: {
+  pi: number;
+  pageQ: DetectedQuestion[];
+  answers: Record<string, string>;
+  profile: StudentProfile;
+  variantSeed: number;
+}) {
+  const fp = profile.fingerprint;
+  const raturesRate = profile.enableRatures
+    ? (fp ? Math.max(profile.raturesRate, fp.inferredRaturesRate * 0.5) : profile.raturesRate)
+    : 0;
+  const blancoRate = profile.enableBlanco
+    ? (fp ? Math.max(profile.blancoRate, fp.inferredBlancoRate * 0.5) : profile.blancoRate)
+    : 0;
+  const smudgeFreq = profile.enableSmudges
+    ? (fp ? fp.inferredSmudgeFreq * 0.7 : 0.28)
+    : 0;
+  const bleedR = fp ? fp.inkBleedRadius : 0.15;
+
+  return (
+    <svg
+      style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none", overflow: "visible" }}
+      viewBox="0 0 100 141.4"
+      preserveAspectRatio="none"
+    >
+      <defs>
+        {/* Ink bleed filter — amount driven by fingerprint */}
+        <filter id={`ink-blur-${pi}`} x="-20%" y="-20%" width="140%" height="140%">
+          <feGaussianBlur stdDeviation={bleedR} />
+        </filter>
+        {/* Smudge turbulence filter */}
+        <filter id={`smudge-${pi}`} x="-30%" y="-30%" width="160%" height="160%">
+          <feTurbulence type="fractalNoise" baseFrequency="0.85 0.55" numOctaves="3" seed={pi * 7 + variantSeed} result="noise" />
+          <feDisplacementMap in="SourceGraphic" in2="noise" scale="0.45" xChannelSelector="R" yChannelSelector="G" />
+        </filter>
+        {/* Blanco texture */}
+        <filter id={`blanco-${pi}`}>
+          <feTurbulence type="turbulence" baseFrequency="0.65" numOctaves="2" result="noise" />
+          <feColorMatrix type="saturate" values="0" />
+          <feBlend in="SourceGraphic" mode="multiply" />
+        </filter>
+      </defs>
+
+      {pageQ.map(q => {
+        const ans = answers[q.id] ?? "";
+        if (!ans) return null;
+        const words = ans.split(/\s+/).filter(Boolean);
+        const inkCol = profile.inkColor;
+
+        return (
+          <React.Fragment key={q.id}>
+            {/* ── Ratures (crossed-out corrections) */}
+            {raturesRate > 0 && words.map((w, wi) => {
+              const rs = sSeed(profile.name + q.id + "rature", wi * 37 + variantSeed);
+              if (rs <= 1 - raturesRate * 3) return null;
+              // Position: spread across the answer block realistically
+              const col  = Math.floor(wi / 6);
+              const row  = wi % 6;
+              const rx   = q.x + row * 5 + (rs * 12) % 8;
+              const ry   = q.y + col * 2.4 + 1.1;
+              const rw   = 3.5 + rs * 7;
+              const jitter1 = (sSeed(profile.name, wi + "j1") - 0.5) * 0.35;
+              const jitter2 = (sSeed(profile.name, wi + "j2") - 0.5) * 0.25;
+              const isBold  = rs > 0.75;
+              const isDouble = rs > 0.87;
+              return (
+                <React.Fragment key={`rat-${wi}`}>
+                  {/* Primary strikethrough */}
+                  <line
+                    x1={rx} y1={ry + jitter1}
+                    x2={rx + rw} y2={ry + 0.18 + jitter1}
+                    stroke={inkCol}
+                    strokeWidth={isBold ? "0.32" : "0.24"}
+                    strokeLinecap="round"
+                    opacity={0.88}
+                    style={{ filter: `url(#ink-blur-${pi})` }}
+                  />
+                  {/* Occasional second strike — slightly offset */}
+                  {isDouble && (
+                    <line
+                      x1={rx - 0.4} y1={ry + 0.38 + jitter2}
+                      x2={rx + rw + 0.4} y2={ry + 0.55 + jitter2}
+                      stroke={inkCol}
+                      strokeWidth="0.19"
+                      strokeLinecap="round"
+                      opacity={0.65}
+                    />
+                  )}
+                  {/* Occasional X-shaped blot at start of rature */}
+                  {rs > 0.92 && (
+                    <circle cx={rx - 0.3} cy={ry + 0.1} r="0.28"
+                      fill={inkCol} opacity={0.55} style={{ filter: `url(#ink-blur-${pi})` }} />
+                  )}
+                </React.Fragment>
+              );
+            })}
+
+            {/* ── Blanco / correction fluid */}
+            {blancoRate > 0 && words.map((_, wi) => {
+              const bs = sSeed(profile.name + q.id + "blanco", wi * 53 + variantSeed + 7);
+              if (bs <= 1 - blancoRate * 2.5) return null;
+              const col = Math.floor(wi / 6);
+              const row = wi % 6;
+              const bx  = q.x + row * 5 + (bs * 10) % 6;
+              const by  = q.y + col * 2.4 - 0.15;
+              const bw  = 4.5 + bs * 8;
+              const bh  = 1.65 + bs * 0.45;
+              const tilt = (sSeed(profile.name, wi + "tilt") - 0.5) * 2.5;
+              const cx   = bx + bw / 2;
+              const cy   = by + bh / 2;
+              return (
+                <React.Fragment key={`blanco-${wi}`}>
+                  {/* Blanco base — slightly warm white, never perfectly pure */}
+                  <rect x={bx} y={by} width={bw} height={bh}
+                    fill="#f3eedd" opacity={0.96} rx="0.25"
+                    transform={`rotate(${tilt},${cx},${cy})`}
+                  />
+                  {/* Blanco highlight — brush application stroke */}
+                  <rect x={bx + 0.15} y={by + 0.1} width={bw - 0.3} height={bh * 0.45}
+                    fill="#f8f5ec" opacity={0.55} rx="0.15"
+                    transform={`rotate(${tilt},${cx},${cy})`}
+                  />
+                  {/* Blanco shadow edge — realistic raised edge */}
+                  <rect x={bx} y={by + bh - 0.28} width={bw} height="0.28"
+                    fill="#d4c9b0" opacity={0.4} rx="0.1"
+                    transform={`rotate(${tilt},${cx},${cy})`}
+                  />
+                </React.Fragment>
+              );
+            })}
+
+            {/* ── Ink smudge / bavure d'encre */}
+            {smudgeFreq > 0 && (() => {
+              const smS  = sSeed(profile.name + q.id + "smudge", variantSeed + 99);
+              if (smS > (1 - smudgeFreq)) return null;
+              const smS2 = sSeed(profile.name + q.id + "smudge2", variantSeed + 77);
+              const sx = q.x + smS * 38;
+              const sy = q.y + 0.8 + smS2 * 2;
+              const r  = 0.25 + smS * 0.55;
+              const ang = smS * 40 - 20;
+              return (
+                <>
+                  {/* Main smudge blob */}
+                  <ellipse cx={sx} cy={sy} rx={r * 2.5} ry={r * 0.55}
+                    fill={inkCol} opacity={0.07 + smS * 0.05}
+                    transform={`rotate(${ang},${sx},${sy})`}
+                    style={{ filter: `url(#smudge-${pi})` }}
+                  />
+                  {/* Satellite micro-blob */}
+                  {smS > 0.5 && (
+                    <ellipse cx={sx + r * 1.8} cy={sy + 0.3} rx={r * 0.9} ry={r * 0.3}
+                      fill={inkCol} opacity={0.05}
+                      transform={`rotate(${ang + 15},${sx + r * 1.8},${sy + 0.3})`}
+                      style={{ filter: `url(#smudge-${pi})` }}
+                    />
+                  )}
+                </>
+              );
+            })()}
+          </React.Fragment>
+        );
+      })}
+    </svg>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DRAGGABLE ANSWER BLOCK
+// ─────────────────────────────────────────────────────────────────────────────
+interface DraggableAnswerProps {
+  question: DetectedQuestion;
+  answer: string;
+  profile: StudentProfile;
+  variantSeed: number;
+  editMode: boolean;
+  offset: { x: number; y: number };
+  onDelta: (id: string, dx: number, dy: number) => void;
+}
+
+function DraggableAnswer({ question, answer, profile, variantSeed, editMode, offset, onDelta }: DraggableAnswerProps) {
+  const dragging = useRef(false);
+  const last = useRef({ x: 0, y: 0 });
+
+  const onMouseDown = (e: React.MouseEvent) => {
+    if (!editMode) return;
+    dragging.current = true;
+    last.current = { x: e.clientX, y: e.clientY };
+    e.preventDefault();
+  };
+
+  useEffect(() => {
+    const mv = (e: MouseEvent) => {
+      if (!dragging.current) return;
+      onDelta(question.id, e.clientX - last.current.x, e.clientY - last.current.y);
+      last.current = { x: e.clientX, y: e.clientY };
+    };
+    const up = () => { dragging.current = false; };
+    window.addEventListener("mousemove", mv);
+    window.addEventListener("mouseup", up);
+    return () => { window.removeEventListener("mousemove", mv); window.removeEventListener("mouseup", up); };
+  }, [question.id, onDelta]);
+
+  return (
+    <div
+      onMouseDown={onMouseDown}
+      style={{
+        position: "absolute",
+        left: `${question.x}%`,
+        top:  `${question.y}%`,
+        transform: `translate(${offset.x}px, ${offset.y}px)`,
+        cursor: editMode ? "move" : "default",
+        maxWidth: `${question.maxWidth ?? 78}%`,
+        zIndex: 5,
+        userSelect: "none",
+      }}
+    >
+      {editMode && (
+        <div style={{
+          position: "absolute", top: -14, left: 0,
+          fontSize: 8, background: "#3b82f6", color: "#fff",
+          padding: "1px 4px", borderRadius: 3, whiteSpace: "nowrap",
+          pointerEvents: "none",
+        }}>
+          ✥ {question.id}
+        </div>
+      )}
+      <HandwrittenText text={answer} qId={question.id} profile={profile} variantSeed={variantSeed} />
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HANDWRITING LAYER — renders page image + SVG effects + text overlays
+// ─────────────────────────────────────────────────────────────────────────────
+interface HandwritingLayerProps {
+  pages: EvalPage[];
+  questions: DetectedQuestion[];
+  answers: Record<string, string>;
+  profile: StudentProfile;
+  variantSeed: number;
+  editMode: boolean;
+  offsets: Record<string, { x: number; y: number }>;
+  onOffsetChange: (id: string, dx: number, dy: number) => void;
+  pageIndex?: number; // undefined = render all (for print)
+}
+
+function HandwritingLayer({
+  pages, questions, answers, profile, variantSeed,
+  editMode, offsets, onOffsetChange, pageIndex,
+}: HandwritingLayerProps) {
+  const pagesToRender = pageIndex !== undefined ? [pages[pageIndex]].filter(Boolean) : pages;
+
+  return (
+    <>
+      {pagesToRender.map((page, renderIdx) => {
+        const pi = pageIndex !== undefined ? pageIndex : renderIdx;
+        const pageQ = questions.filter(q => q.pageIndex === pi);
+
+        return (
+          <div
+            key={pi}
+            className="relative bg-white"
+            style={{
+              width: "100%",
+              aspectRatio: "210/297",
+              overflow: "hidden",
+              pageBreakAfter: renderIdx < pagesToRender.length - 1 ? "always" : "auto",
+            }}
+          >
+            {/* Real evaluation page image */}
+            {page.base64 && (
+              <img
+                src={page.base64}
+                alt={`Page ${pi + 1}`}
+                style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "fill", pointerEvents: "none" }}
+                draggable={false}
+              />
+            )}
+
+            {/* SVG realism layer: ratures, blanco, smudges */}
+            <PageRealism pi={pi} pageQ={pageQ} answers={answers} profile={profile} variantSeed={variantSeed} />
+
+            {/* Text overlays */}
+            {pageQ.map(q => {
+              const ans = answers[q.id] ?? "";
+              if (!ans) return null;
+              const off = offsets[q.id] ?? { x: 0, y: 0 };
+              return (
+                <DraggableAnswer
+                  key={q.id}
+                  question={q}
+                  answer={ans}
+                  profile={profile}
+                  variantSeed={variantSeed}
+                  editMode={editMode}
+                  offset={off}
+                  onDelta={onOffsetChange}
+                />
+              );
+            })}
+
+            {editMode && (
+              <div style={{
+                position: "absolute", inset: 0, border: "2px dashed #3b82f6",
+                pointerEvents: "none", borderRadius: 2,
+              }} />
+            )}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FINGERPRINT BADGE — shows analysis quality
+// ─────────────────────────────────────────────────────────────────────────────
+function FingerprintBadge({ fp }: { fp?: HandwritingFingerprint }) {
+  if (!fp) return null;
+  const score = fp.confidenceScore ?? 0;
+  const color = score >= 75 ? "bg-green-400" : score >= 55 ? "bg-yellow-400" : "bg-orange-300";
+  return (
+    <div className={`flex items-center gap-1.5 px-2 py-1 ${color} border-2 border-black rounded-lg`}>
+      <Eye className="h-3 w-3" />
+      <span className="text-[9px] font-black">
+        Empreinte {score}% — {score >= 75 ? "Haute fidélité" : score >= 55 ? "Bonne fidélité" : "Fidélité partielle"}
+      </span>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MAIN APP
 // ─────────────────────────────────────────────────────────────────────────────
 export default function App() {
-  // ── Workflow step ─────────────────────────────────────────────────────────
+
   const [step, setStep] = useState<WorkflowStep>("import");
 
-  // ── Evaluation pages ──────────────────────────────────────────────────────
-  const [evalPages, setEvalPages] = useState<EvalPage[]>([]);
+  // Evaluation
+  const [evalPages, setEvalPages]     = useState<EvalPage[]>([]);
   const [isRealUpload, setIsRealUpload] = useState(false);
   const [isPdfLoading, setIsPdfLoading] = useState(false);
   const [usePreloaded, setUsePreloaded] = useState(false);
-  const [preloadedTemplateId, setPreloadedTemplateId] = useState("page3");
 
-  // ── Detected questions ────────────────────────────────────────────────────
-  const [detectedQuestions, setDetectedQuestions] = useState<DetectedQuestion[]>([]);
+  // Questions
+  const [questions, setQuestions]   = useState<DetectedQuestion[]>([]);
   const [isDetecting, setIsDetecting] = useState(false);
-  const [detectError, setDetectError] = useState("");
+  const [detectErr, setDetectErr]   = useState("");
 
-  // ── Student profiles ──────────────────────────────────────────────────────
+  // Students
   const [savedProfiles, setSavedProfiles] = useState<StudentProfile[]>([]);
-  const [activeProfile, setActiveProfile] = useState<StudentProfile>(defaultProfile("Élève 1"));
-  const [isEditingProfile, setIsEditingProfile] = useState(false);
-  const [isLoadingProfiles, setIsLoadingProfiles] = useState(false);
-  const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [activeProfile, setActiveProfile] = useState<StudentProfile>(defaultProfile());
+  const [isSaving, setIsSaving]     = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [mongoOk, setMongoOk]       = useState(false);
 
-  // ── Grade / criteria level ─────────────────────────────────────────────────
+  // Grade
   const [criteriaLevel, setCriteriaLevel] = useState<CriteriaLevel>(CriteriaLevel.LEVEL_5_6);
-  const [variantSeed, setVariantSeed] = useState(1);
+  const [variantSeed, setVariantSeed]     = useState(1);
 
-  // ── Answers ───────────────────────────────────────────────────────────────
-  const [generatedAnswers, setGeneratedAnswers] = useState<Record<string, string>>({});
+  // Answers
+  const [answers, setAnswers]         = useState<Record<string, string>>({});
   const [isGenerating, setIsGenerating] = useState(false);
-  const [generateError, setGenerateError] = useState("");
+  const [genErr, setGenErr]           = useState("");
 
-  // ── Preview controls ──────────────────────────────────────────────────────
-  const [currentPageIdx, setCurrentPageIdx] = useState(0);
-  const [editMode, setEditMode] = useState(false);
-  const [offsets, setOffsets] = useState<Record<string, { x: number; y: number }>>({});
+  // Preview
+  const [previewPage, setPreviewPage] = useState(0);
+  const [editMode, setEditMode]       = useState(false);
+  const [offsets, setOffsets]         = useState<Record<string, { x: number; y: number }>>({});
 
-  // ── MongoDB availability ──────────────────────────────────────────────────
-  const [mongoAvailable, setMongoAvailable] = useState(false);
-
-  // ── Load PDF.js ──────────────────────────────────────────────────────────
+  // ── PDF.js
   useEffect(() => {
     if ((window as any).pdfjsLib) return;
-    const script = document.createElement("script");
-    script.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js";
-    script.async = true;
-    script.onload = () => {
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js";
+    s.async = true;
+    s.onload = () => {
       (window as any).pdfjsLib.GlobalWorkerOptions.workerSrc =
         "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js";
     };
-    document.body.appendChild(script);
+    document.body.appendChild(s);
   }, []);
 
-  // ── Load students from MongoDB (or localStorage fallback) ─────────────────
+  // ── Load student profiles
   const loadProfiles = useCallback(async () => {
-    setIsLoadingProfiles(true);
     try {
-      const res = await fetch("/api/students");
-      const data = await res.json();
-      if (data.success) {
-        setMongoAvailable(!data.offline);
-        if (data.students && data.students.length > 0) {
-          const profiles: StudentProfile[] = data.students.map((s: any) => ({
-            ...s,
-            hwImage: s.hwImageBase64 || null,
-          }));
-          setSavedProfiles(profiles);
+      const r = await fetch("/api/students");
+      const d = await r.json();
+      if (d.success) {
+        setMongoOk(!d.offline);
+        if (d.students?.length) {
+          setSavedProfiles(d.students.map((s: any) => ({ ...s, hwImage: s.hwImageBase64 || null })));
           return;
         }
       }
-    } catch (e) {
-      console.warn("MongoDB indisponible, fallback localStorage");
-    }
-    // Fallback localStorage
+    } catch { /* fallback to localStorage */ }
     try {
-      const local = localStorage.getItem("student_profiles_v3");
-      if (local) setSavedProfiles(JSON.parse(local));
+      const loc = localStorage.getItem("student_profiles_v3");
+      if (loc) setSavedProfiles(JSON.parse(loc));
     } catch { /* ignore */ }
-    setIsLoadingProfiles(false);
   }, []);
 
   useEffect(() => { loadProfiles(); }, [loadProfiles]);
 
-  // ── Save profile to MongoDB + localStorage ────────────────────────────────
-  const saveProfile = async (profile: StudentProfile) => {
-    setIsSavingProfile(true);
+  const saveProfile = async (p: StudentProfile) => {
+    setIsSaving(true);
     try {
-      const body = {
-        ...profile,
-        hwImageBase64: profile.hwImage || profile.hwImageBase64 || "",
-      };
-      const res = await fetch("/api/students", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+      const r = await fetch("/api/students", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...p, hwImageBase64: p.hwImage || "" }),
       });
-      const data = await res.json();
-      if (data.success) {
-        const updated = data.student ? { ...data.student, hwImage: data.student.hwImageBase64 || null } : profile;
+      const d = await r.json();
+      if (d.success) {
+        const saved = d.student ? { ...d.student, hwImage: d.student.hwImageBase64 || null } : p;
         setSavedProfiles(prev => {
-          const filtered = prev.filter(p => p.name.toLowerCase() !== profile.name.toLowerCase());
-          const next = [updated, ...filtered];
+          const next = [saved, ...prev.filter(x => x.name.toLowerCase() !== p.name.toLowerCase())];
           localStorage.setItem("student_profiles_v3", JSON.stringify(next));
           return next;
         });
       }
-    } catch (e) {
-      // localStorage fallback
+    } catch {
       setSavedProfiles(prev => {
-        const filtered = prev.filter(p => p.name.toLowerCase() !== profile.name.toLowerCase());
-        const next = [profile, ...filtered];
+        const next = [p, ...prev.filter(x => x.name.toLowerCase() !== p.name.toLowerCase())];
         localStorage.setItem("student_profiles_v3", JSON.stringify(next));
         return next;
       });
-    } finally {
-      setIsSavingProfile(false);
     }
+    setIsSaving(false);
   };
 
   const deleteProfile = async (name: string) => {
-    try {
-      await fetch(`/api/students?name=${encodeURIComponent(name)}`, { method: "DELETE" });
-    } catch { /* ignore */ }
+    try { await fetch(`/api/students?name=${encodeURIComponent(name)}`, { method: "DELETE" }); } catch { /* ignore */ }
     setSavedProfiles(prev => {
-      const next = prev.filter(p => p.name !== name);
-      localStorage.setItem("student_profiles_v3", JSON.stringify(next));
-      return next;
+      const n = prev.filter(p => p.name !== name);
+      localStorage.setItem("student_profiles_v3", JSON.stringify(n));
+      return n;
     });
   };
 
-  // ── Analyze handwriting sample ────────────────────────────────────────────
-  const analyzeHandwriting = async (base64Img: string) => {
+  // ── Deep handwriting analysis — uses the enhanced Gemini Vision API
+  const analyzeHandwriting = async (b64: string, fileName: string) => {
     setIsAnalyzing(true);
     try {
-      const res = await fetch("/api/analyze-handwriting", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ handwritingImage: base64Img, studentName: activeProfile.name }),
+      const r = await fetch("/api/analyze-handwriting", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ handwritingImage: b64, studentName: activeProfile.name }),
       });
-      const data = await res.json();
-      if (data.success && data.handwritingStyle) {
-        const style = data.handwritingStyle;
-        const fontKeyMap: Record<string, string> = {
-          "homemade apple": "homemade-apple",
-          "marck script": "marck-script",
-          "parisienne": "parisienne",
-          "allura": "allura",
-          "la belle aurore": "la-belle-aurore",
-          "bad script": "bad-script",
-        };
-        const colorMap: Record<string, string> = {
-          blue: "#1d3278", black: "#1c1c1e", red: "#be0000", green: "#0a7a2a",
-        };
+      const d = await r.json();
+      if (d.success && d.handwritingStyle) {
+        const s = d.handwritingStyle as HandwritingFingerprint;
+
+        // Map suggested font/color to our keys
+        const fontKey  = FONT_KEY_MAP[s.suggestedFont?.toLowerCase()] ?? "homemade-apple";
+        const inkColor = s.suggestedColor?.startsWith("#")
+          ? s.suggestedColor
+          : (COLOR_MAP[s.suggestedColor?.toLowerCase()] ?? activeProfile.inkColor);
+
         setActiveProfile(prev => ({
           ...prev,
-          hwImage: base64Img,
-          fontKey: fontKeyMap[style.suggestedFont?.toLowerCase()] || "homemade-apple",
-          inkColor: colorMap[style.suggestedColor?.toLowerCase()] || prev.inkColor,
-          fontSize: style.suggestedSize || prev.fontSize,
-          rotationAngle: typeof style.suggestedRotation === "number" ? style.suggestedRotation : prev.rotationAngle,
-          analysisDescription: style.analysisDescription,
-          confidenceScore: style.confidenceScore,
+          hwImage: b64,
+          hwImageName: fileName,
+          // ── Apply fingerprint-derived params to profile fields
+          fontKey,
+          inkColor,
+          fontSize:            s.suggestedSize      ?? prev.fontSize,
+          rotationAngle:       s.suggestedRotation  ?? prev.rotationAngle,
+          skewAngle:           s.suggestedRotation  ?? prev.skewAngle,
+          messinessIntensity:  s.messinessIntensity ?? prev.messinessIntensity,
+          enableUnreadableLetters: s.enableUnreadableLetters ?? prev.enableUnreadableLetters,
+          letterCaseChaos:     s.letterCaseChaos    ?? prev.letterCaseChaos,
+          penThickness:        s.penThickness        ?? prev.penThickness,
+          lineWobbleAmp:       s.baselineWobbleAmp  ?? prev.lineWobbleAmp,
+          // Apply inferred realism settings
+          raturesRate:  s.inferredRaturesRate ?? prev.raturesRate,
+          blancoRate:   s.inferredBlancoRate  ?? prev.blancoRate,
+          enableRatures: (s.inferredRaturesRate ?? 0) > 0.01 ? true : prev.enableRatures,
+          enableBlanco:  (s.inferredBlancoRate  ?? 0) > 0.005 ? true : prev.enableBlanco,
+          enableSmudges: (s.inferredSmudgeFreq  ?? 0) > 0.15 ? true : prev.enableSmudges,
+          // ── Store full fingerprint for the renderer
+          fingerprint: s,
+          analysisDescription: s.analysisDescription,
+          confidenceScore:     s.confidenceScore,
         }));
       }
-    } catch (e) {
-      console.error("Analyse écriture échouée", e);
-    } finally {
-      setIsAnalyzing(false);
-    }
+    } catch (err) { console.error("analyze:", err); }
+    setIsAnalyzing(false);
   };
 
-  // ── Upload evaluation (PDF or image) ─────────────────────────────────────
+  // ── Upload evaluation PDF/image
   const handleEvalUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    setDetectedQuestions([]);
-    setGeneratedAnswers({});
-    setIsRealUpload(true);
-    setUsePreloaded(false);
-
+    setQuestions([]); setAnswers({}); setIsRealUpload(true); setUsePreloaded(false);
     if (file.type === "application/pdf" || file.name.endsWith(".pdf")) {
       setIsPdfLoading(true);
       const reader = new FileReader();
       reader.onload = async (ev) => {
         try {
-          const typedarray = new Uint8Array(ev.target?.result as ArrayBuffer);
-          const pdfjsLib = (window as any).pdfjsLib;
-          if (!pdfjsLib) { alert("PDF.js en cours d'initialisation, réessayez."); setIsPdfLoading(false); return; }
-          const pdf = await pdfjsLib.getDocument({ data: typedarray }).promise;
+          const arr = new Uint8Array(ev.target?.result as ArrayBuffer);
+          const lib = (window as any).pdfjsLib;
+          if (!lib) { alert("PDF.js non chargé, réessayez."); setIsPdfLoading(false); return; }
+          const pdf = await lib.getDocument({ data: arr }).promise;
           const pages: EvalPage[] = [];
-          for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-            const page = await pdf.getPage(pageNum);
-            const viewport = page.getViewport({ scale: 2.0 });
-            const canvas = document.createElement("canvas");
-            const ctx = canvas.getContext("2d");
-            if (ctx) {
-              canvas.width = viewport.width;
-              canvas.height = viewport.height;
-              await page.render({ canvasContext: ctx, viewport }).promise;
-              pages.push({ base64: canvas.toDataURL("image/png"), pageNum });
-            }
+          for (let n = 1; n <= pdf.numPages; n++) {
+            const page = await pdf.getPage(n);
+            const vp   = page.getViewport({ scale: 2.0 });
+            const cv   = document.createElement("canvas");
+            const ctx  = cv.getContext("2d")!;
+            cv.width = vp.width; cv.height = vp.height;
+            await page.render({ canvasContext: ctx, viewport: vp }).promise;
+            pages.push({ base64: cv.toDataURL("image/png"), pageNum: n });
           }
-          if (pages.length > 0) {
-            setEvalPages(pages);
-            setStep("students");
-          }
+          if (pages.length) { setEvalPages(pages); setPreviewPage(0); setStep("students"); }
         } catch (err) { console.error(err); }
         finally { setIsPdfLoading(false); }
       };
       reader.readAsArrayBuffer(file);
     } else {
       const reader = new FileReader();
-      reader.onload = (ev) => {
+      reader.onload = ev => {
         setEvalPages([{ base64: ev.target?.result as string, pageNum: 1 }]);
         setStep("students");
       };
@@ -681,268 +929,193 @@ export default function App() {
     }
   };
 
-  // ── Load preloaded template ────────────────────────────────────────────────
-  const handleLoadPreloaded = (templateId: string) => {
-    setPreloadedTemplateId(templateId);
-    setUsePreloaded(true);
-    setIsRealUpload(false);
-    setDetectedQuestions([]);
-    setGeneratedAnswers({});
-
-    // For preloaded templates, we build fake "pages" from the template background
-    const template = PRELOADED_TEMPLATES.find(t => t.id === templateId);
-    if (template) {
-      // Questions are already defined in templates
-      const qs: DetectedQuestion[] = (template.questions || []).map(q => ({
-        id: q.id,
-        text: q.questionText,
-        pageIndex: 0,
-        x: q.defaultX,
-        y: q.defaultY,
-      }));
-      setDetectedQuestions(qs);
+  const loadPreloaded = (id: string) => {
+    setUsePreloaded(true); setIsRealUpload(false);
+    setAnswers({}); setQuestions([]);
+    const tpl = PRELOADED_TEMPLATES.find(t => t.id === id);
+    if (tpl) {
+      setQuestions(tpl.questions.map(q => ({
+        id: q.id, text: q.questionText, pageIndex: 0,
+        x: q.defaultX, y: q.defaultY, maxWidth: q.maxWidth ?? 78,
+      })));
     }
     setStep("students");
   };
 
-  // ── Detect questions from uploaded eval pages ─────────────────────────────
   const detectQuestions = async () => {
-    if (evalPages.length === 0) return;
-    setIsDetecting(true);
-    setDetectError("");
+    if (!evalPages.length) return;
+    setIsDetecting(true); setDetectErr("");
     try {
-      const res = await fetch("/api/detect-questions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+      const r = await fetch("/api/detect-questions", {
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ pdfPagesBase64: evalPages.map(p => p.base64) }),
       });
-      const data = await res.json();
-      if (data.success && data.questions?.length > 0) {
-        setDetectedQuestions(data.questions);
-        setStep("grade");
-      } else {
-        setDetectError("Aucune question détectée. Vérifiez que le document est lisible.");
-      }
-    } catch (e) {
-      setDetectError("Erreur de connexion. Vérifiez que le serveur est démarré.");
-    } finally {
-      setIsDetecting(false);
-    }
+      const d = await r.json();
+      if (d.success && d.questions?.length) { setQuestions(d.questions); setStep("grade"); }
+      else setDetectErr("Aucune question détectée. Vérifiez que le document est lisible.");
+    } catch { setDetectErr("Erreur de connexion."); }
+    setIsDetecting(false);
   };
 
-  // ── Generate answers via Gemini ───────────────────────────────────────────
   const generateAnswers = async () => {
-    if (detectedQuestions.length === 0) return;
-    setIsGenerating(true);
-    setGenerateError("");
+    if (!questions.length) return;
+    setIsGenerating(true); setGenErr("");
     try {
-      // For preloaded templates, use RUBRIC_ANSWERS as base then personalize
-      if (usePreloaded) {
-        const rubric = RUBRIC_ANSWERS[criteriaLevel] || {};
-        // Use rubric answers as base but call API for unique per-student version
-        const res = await fetch("/api/generate-answers", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            questions: detectedQuestions,
-            criteriaLevel,
-            studentName: activeProfile.name,
-            variantSeed,
-            pdfPagesBase64: [],
-            saveSession: true,
-          }),
-        });
-        const data = await res.json();
-        if (data.success && data.answers) {
-          setGeneratedAnswers(data.answers);
-          setStep("preview");
-        } else {
-          // Fallback to rubric answers
-          setGeneratedAnswers(rubric);
-          setStep("preview");
-        }
-      } else {
-        const res = await fetch("/api/generate-answers", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            questions: detectedQuestions,
-            criteriaLevel,
-            studentName: activeProfile.name,
-            variantSeed,
-            pdfPagesBase64: evalPages.map(p => p.base64),
-            saveSession: true,
-          }),
-        });
-        const data = await res.json();
-        if (data.success && data.answers) {
-          setGeneratedAnswers(data.answers);
-          setStep("preview");
-        } else {
-          setGenerateError("Erreur lors de la génération des réponses.");
-        }
-      }
-    } catch (e) {
-      setGenerateError("Erreur de connexion au serveur.");
-    } finally {
-      setIsGenerating(false);
-    }
+      const r = await fetch("/api/generate-answers", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          questions, criteriaLevel,
+          studentName: activeProfile.name,
+          variantSeed,
+          pdfPagesBase64: evalPages.map(p => p.base64),
+          saveSession: true,
+        }),
+      });
+      const d = await r.json();
+      if (d.success && d.answers) {
+        setAnswers(d.answers);
+        setOffsets({});
+        setPreviewPage(0);
+        setStep("preview");
+      } else setGenErr("Erreur lors de la génération.");
+    } catch { setGenErr("Erreur de connexion."); }
+    setIsGenerating(false);
   };
 
-  // ── Handle offset changes ─────────────────────────────────────────────────
-  const handleOffsetChange = useCallback((qId: string, dx: number, dy: number) => {
-    setOffsets(prev => ({
-      ...prev,
-      [qId]: { x: (prev[qId]?.x || 0) + dx, y: (prev[qId]?.y || 0) + dy },
-    }));
+  const handleOffsetChange = useCallback((id: string, dx: number, dy: number) => {
+    setOffsets(prev => ({ ...prev, [id]: { x: (prev[id]?.x || 0) + dx, y: (prev[id]?.y || 0) + dy } }));
   }, []);
 
-  // ── Build page display — for preloaded use prebuilt canvas ─────────────────
-  const getPagesForDisplay = (): EvalPage[] => {
-    if (usePreloaded) {
-      const template = PRELOADED_TEMPLATES.find(t => t.id === preloadedTemplateId);
-      if (template) {
-        // Return empty pages — rendered by PreloadedPageRenderer below
-        return [{ base64: "", pageNum: 1 }];
-      }
-    }
-    return evalPages;
-  };
+  const displayPages: EvalPage[] = usePreloaded
+    ? [{ base64: "", pageNum: 1 }]
+    : evalPages;
 
-  const displayPages = getPagesForDisplay();
+  const upd = <K extends keyof StudentProfile>(k: K, v: StudentProfile[K]) =>
+    setActiveProfile(prev => ({ ...prev, [k]: v }));
 
   // ─────────────────────────────────────────────────────────────────────────
   // RENDER
   // ─────────────────────────────────────────────────────────────────────────
-
   return (
-    <div className="min-h-screen bg-zinc-100 flex flex-col text-black antialiased">
+    <div className="min-h-screen bg-zinc-100 flex flex-col antialiased">
 
-      {/* ── SVG Filters for handwriting effects ── */}
-      <svg width="0" height="0" style={{ position: "absolute" }}>
-        <defs>
-          <filter id="pencil-texture">
-            <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="4" result="noise" />
-            <feDisplacementMap in="SourceGraphic" in2="noise" scale="2" xChannelSelector="R" yChannelSelector="G" />
-          </filter>
-          <filter id="ink-bleed">
-            <feTurbulence type="turbulence" baseFrequency="0.05 0.1" numOctaves="2" result="noise" />
-            <feDisplacementMap in="SourceGraphic" in2="noise" scale="1.2" />
-          </filter>
-        </defs>
-      </svg>
-
-      {/* ── PRINT STYLES — hidden chrome, full page ── */}
+      {/* Print styles */}
       <style>{`
         @media print {
-          body * { visibility: hidden !important; }
-          #print-area, #print-area * { visibility: visible !important; }
-          #print-area { 
-            position: fixed !important; 
-            inset: 0 !important; 
-            z-index: 9999 !important;
-            background: white !important;
+          body > *:not(#print-root) { display: none !important; }
+          #print-root { display: block !important; }
+          #print-root .page-wrap {
+            width: 210mm; min-height: 297mm;
+            page-break-after: always; position: relative;
+            overflow: hidden; background: white;
           }
-          .no-print { display: none !important; }
+          #print-root .page-wrap:last-child { page-break-after: auto; }
           @page { margin: 0; size: A4 portrait; }
         }
+        #print-root { display: none; }
       `}</style>
 
-      {/* ── HEADER ── */}
-      <header className="bg-white border-b-4 border-black px-6 py-3 flex flex-wrap justify-between items-center sticky top-0 z-50 shadow-[0_4px_0_0_rgba(0,0,0,1)] no-print">
-        <div className="flex items-center space-x-3">
-          <div className="w-10 h-10 bg-black rounded-full flex items-center justify-center text-yellow-400 font-black italic text-xl shadow-[2px_2px_0_0_rgba(250,204,21,1)]">nb</div>
+      {/* ── Print root (hidden normally, shown on @media print) ── */}
+      <div id="print-root">
+        {displayPages.map((page, i) => {
+          const pageQ = questions.filter(q => q.pageIndex === i);
+          return (
+            <div key={i} className="page-wrap">
+              {page.base64 && (
+                <img src={page.base64} alt=""
+                  style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "fill" }}
+                />
+              )}
+              {/* SVG realism for print */}
+              <PageRealism pi={i} pageQ={pageQ} answers={answers} profile={activeProfile} variantSeed={variantSeed} />
+              {/* Text answers for print */}
+              {pageQ.map(q => {
+                const ans = answers[q.id] ?? "";
+                if (!ans) return null;
+                const off = offsets[q.id] ?? { x: 0, y: 0 };
+                return (
+                  <div key={q.id} style={{
+                    position: "absolute", left: `${q.x}%`, top: `${q.y}%`,
+                    transform: `translate(${off.x}px,${off.y}px)`,
+                    maxWidth: `${q.maxWidth ?? 78}%`, userSelect: "none",
+                  }}>
+                    <HandwrittenText text={ans} qId={q.id} profile={activeProfile} variantSeed={variantSeed} />
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* ── Header ── */}
+      <header className="bg-white border-b-4 border-black px-5 py-3 flex flex-wrap justify-between items-center sticky top-0 z-50 shadow-[0_4px_0_0_rgba(0,0,0,1)]">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 bg-black rounded-full flex items-center justify-center text-yellow-400 font-black italic text-lg">nb</div>
           <div>
-            <h1 className="text-xl font-black tracking-tight text-black flex items-center gap-2">
+            <h1 className="text-xl font-black flex items-center gap-2">
               nanobanana
-              <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-400 border-2 border-black font-extrabold shadow-[2px_2px_0_0_rgba(0,0,0,1)]">PRO</span>
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-yellow-400 border-2 border-black font-extrabold">PRO</span>
             </h1>
-            <p className="text-[10px] font-bold text-black/60">Évaluations manuscrites 100% réalistes — Gemini AI + MongoDB</p>
+            <p className="text-[9px] font-bold text-black/50">Évaluations 100% réalistes — Gemini AI + Deep Handwriting Engine</p>
           </div>
         </div>
-        <div className="flex items-center gap-3 mt-2 sm:mt-0">
-          <div className={`flex items-center gap-1.5 text-xs font-black border-2 border-black py-1 px-2.5 rounded-xl shadow-[2px_2px_0_0_rgba(0,0,0,1)] ${mongoAvailable ? "bg-lime-400 text-black" : "bg-orange-200 text-black"}`}>
-            <span className="h-2 w-2 rounded-full bg-black animate-pulse" />
-            <span>{mongoAvailable ? "MONGODB • CONNECTÉ" : "MODE LOCAL"}</span>
-          </div>
-          <div className="flex items-center gap-1.5 text-xs bg-blue-400 text-black font-black border-2 border-black py-1 px-2.5 rounded-xl shadow-[2px_2px_0_0_rgba(0,0,0,1)]">
-            <span className="h-2 w-2 rounded-full bg-black animate-pulse" />
-            <span>GEMINI 2.5 FLASH</span>
-          </div>
+        <div className="flex items-center gap-2 mt-1 sm:mt-0">
+          {activeProfile.fingerprint && <FingerprintBadge fp={activeProfile.fingerprint} />}
+          <span className={`text-[10px] font-black border-2 border-black py-1 px-2 rounded-lg ${mongoOk ? "bg-lime-400" : "bg-orange-200"}`}>
+            {mongoOk ? "● MONGODB" : "● LOCAL"}
+          </span>
+          <span className="text-[10px] font-black border-2 border-black py-1 px-2 rounded-lg bg-blue-300">
+            ● GEMINI 2.5 FLASH
+          </span>
         </div>
       </header>
 
-      {/* ── STEP INDICATOR ── */}
-      <div className="bg-white border-b-2 border-black/10 px-4 py-2 no-print">
-        <StepIndicator current={step} onGoTo={setStep} />
+      {/* ── Step bar ── */}
+      <div className="bg-white border-b border-black/10">
+        <StepBar current={step} onGoto={setStep} />
       </div>
 
-      {/* ── MAIN CONTENT ── */}
+      {/* ── Main ── */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 lg:p-6">
         <AnimatePresence mode="wait">
 
-          {/* ════════════════════════════════════════════════════════════════
-              STEP 1 — IMPORT EVALUATION
-          ════════════════════════════════════════════════════════════════ */}
+          {/* ════════════════════════════════════════════
+              STEP 1 — IMPORT
+          ════════════════════════════════════════════ */}
           {step === "import" && (
-            <motion.div key="import"
-              initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }}
-              className="space-y-6"
+            <motion.div key="import" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -16 }}
+              className="space-y-6 max-w-3xl mx-auto pt-6"
             >
-              <div className="text-center space-y-2 py-4">
-                <h2 className="text-3xl font-black text-black">Importer l'évaluation</h2>
-                <p className="text-black/60 font-bold">Téléversez le PDF ou l'image de l'évaluation, ou choisissez une fiche préchargée</p>
+              <div className="text-center">
+                <h2 className="text-3xl font-black">Importer l'évaluation</h2>
+                <p className="text-black/50 font-bold text-sm mt-1">PDF multipages ou image — ou choisissez une fiche préchargée</p>
               </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-3xl mx-auto">
-                {/* Upload card */}
-                <div className="bg-white rounded-3xl border-4 border-black p-6 shadow-[6px_6px_0_0_rgba(0,0,0,1)] space-y-4">
-                  <div className="flex items-center gap-2">
-                    <span className="bg-blue-400 border-2 border-black px-2 py-0.5 rounded-lg text-xs font-black">PDF / IMAGE</span>
-                    <span className="font-black text-sm">Votre évaluation</span>
-                  </div>
-                  <label className="block border-4 border-dashed border-black/30 rounded-2xl p-8 text-center bg-slate-50 cursor-pointer hover:bg-blue-50 hover:border-black/60 transition-all relative">
-                    <input
-                      type="file"
-                      accept="application/pdf,image/*"
-                      onChange={handleEvalUpload}
-                      className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
-                    />
-                    {isPdfLoading ? (
-                      <RefreshCw className="h-12 w-12 text-blue-500 mx-auto mb-3 animate-spin" />
-                    ) : (
-                      <Upload className="h-12 w-12 text-black/40 mx-auto mb-3" />
-                    )}
-                    <p className="font-black text-black text-sm">
-                      {isPdfLoading ? "Traitement PDF..." : "Cliquez ou glissez ici"}
-                    </p>
-                    <p className="text-xs text-black/50 mt-1">PDF multipages ou image PNG/JPG</p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <div className="bg-white rounded-2xl border-4 border-black p-5 shadow-[5px_5px_0_rgba(0,0,0,1)] space-y-3">
+                  <span className="inline-block bg-blue-400 border-2 border-black px-2 py-0.5 rounded-lg text-xs font-black">PDF / IMAGE</span>
+                  <label className="block border-4 border-dashed border-black/25 rounded-xl p-8 text-center bg-slate-50 cursor-pointer hover:bg-blue-50 hover:border-black/50 transition relative">
+                    <input type="file" accept="application/pdf,image/*" onChange={handleEvalUpload} className="absolute inset-0 opacity-0 cursor-pointer w-full h-full" />
+                    {isPdfLoading
+                      ? <RefreshCw className="h-10 w-10 text-blue-400 mx-auto mb-2 animate-spin" />
+                      : <Upload className="h-10 w-10 text-black/30 mx-auto mb-2" />}
+                    <p className="font-black text-sm">{isPdfLoading ? "Traitement PDF..." : "Cliquez ou glissez ici"}</p>
+                    <p className="text-xs text-black/40 mt-1">PDF multipages • PNG • JPG</p>
                   </label>
-                  <p className="text-xs text-black/50 text-center font-bold">
-                    ✓ Gemini lit automatiquement les questions<br/>
-                    ✓ Aucune décoration n'est ajoutée aux pages réelles
-                  </p>
                 </div>
-
-                {/* Preloaded card */}
-                <div className="bg-white rounded-3xl border-4 border-black p-6 shadow-[6px_6px_0_0_rgba(0,0,0,1)] space-y-4">
-                  <div className="flex items-center gap-2">
-                    <span className="bg-yellow-400 border-2 border-black px-2 py-0.5 rounded-lg text-xs font-black">PRÉCHARGÉ</span>
-                    <span className="font-black text-sm">Fiches Al Kawthar</span>
-                  </div>
+                <div className="bg-white rounded-2xl border-4 border-black p-5 shadow-[5px_5px_0_rgba(0,0,0,1)] space-y-3">
+                  <span className="inline-block bg-yellow-400 border-2 border-black px-2 py-0.5 rounded-lg text-xs font-black">PRÉCHARGÉ</span>
                   <div className="space-y-2">
                     {PRELOADED_TEMPLATES.map(t => (
-                      <button
-                        key={t.id}
-                        onClick={() => handleLoadPreloaded(t.id)}
-                        className="w-full flex items-center gap-3 p-3 border-2 border-black rounded-xl hover:bg-yellow-50 hover:shadow-[3px_3px_0_0_rgba(0,0,0,1)] transition-all text-left"
+                      <button key={t.id} onClick={() => loadPreloaded(t.id)}
+                        className="w-full flex items-center gap-3 p-3 border-2 border-black/20 rounded-xl hover:border-black hover:bg-yellow-50 transition text-left"
                       >
                         <FileText className="h-5 w-5 shrink-0" />
-                        <div>
+                        <div className="flex-1 min-w-0">
                           <p className="font-black text-xs">Page {t.pageNumber}</p>
-                          <p className="text-[10px] text-black/60 font-bold">{t.title}</p>
+                          <p className="text-[10px] text-black/50">{t.title}</p>
                         </div>
-                        <ChevronRight className="h-4 w-4 ml-auto text-black/40" />
+                        <ChevronRight className="h-4 w-4 text-black/30" />
                       </button>
                     ))}
                   </div>
@@ -951,241 +1124,319 @@ export default function App() {
             </motion.div>
           )}
 
-          {/* ════════════════════════════════════════════════════════════════
-              STEP 2 — SELECT / CREATE STUDENT
-          ════════════════════════════════════════════════════════════════ */}
+          {/* ════════════════════════════════════════════
+              STEP 2 — STUDENT SELECTION + PROFILE
+          ════════════════════════════════════════════ */}
           {step === "students" && (
-            <motion.div key="students"
-              initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }}
-              className="space-y-6 max-w-4xl mx-auto"
+            <motion.div key="students" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -16 }}
+              className="space-y-5 max-w-5xl mx-auto pt-4"
             >
-              <div className="text-center space-y-2 py-4">
-                <h2 className="text-3xl font-black">Sélectionner l'élève</h2>
-                <p className="text-black/60 font-bold">Choisissez un élève existant ou créez-en un nouveau</p>
-              </div>
+              <h2 className="text-2xl font-black text-center">Sélectionner l'élève</h2>
 
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {/* Saved profiles list */}
-                <div className="bg-white rounded-3xl border-4 border-black p-6 shadow-[6px_6px_0_0_rgba(0,0,0,1)] space-y-4">
+              <div className="grid grid-cols-1 lg:grid-cols-5 gap-5">
+                {/* Left: saved list */}
+                <div className="lg:col-span-2 bg-white rounded-2xl border-4 border-black p-5 shadow-[5px_5px_0_rgba(0,0,0,1)] space-y-3">
                   <div className="flex items-center justify-between">
-                    <h3 className="font-black flex items-center gap-2">
-                      <Users className="h-4 w-4" /> Élèves enregistrés
-                      <span className="text-xs bg-black text-yellow-400 px-2 py-0.5 rounded-full font-black">{savedProfiles.length}</span>
-                    </h3>
-                    <button
-                      onClick={loadProfiles}
-                      className="p-1.5 rounded-lg border-2 border-black hover:bg-yellow-50 transition-all"
-                    >
-                      <RefreshCw className="h-3.5 w-3.5" />
-                    </button>
+                    <h3 className="font-black text-sm flex items-center gap-1.5"><Users className="h-4 w-4" /> Élèves</h3>
+                    <button onClick={loadProfiles} className="p-1 rounded-lg border border-black/20 hover:bg-yellow-50 transition"><RefreshCw className="h-3.5 w-3.5" /></button>
                   </div>
-
-                  {isLoadingProfiles ? (
-                    <div className="py-8 text-center">
-                      <RefreshCw className="h-8 w-8 animate-spin mx-auto text-black/40" />
-                      <p className="text-xs font-bold text-black/50 mt-2">Chargement...</p>
-                    </div>
-                  ) : savedProfiles.length === 0 ? (
-                    <div className="py-8 text-center border-2 border-dashed border-black/20 rounded-2xl">
-                      <Users className="h-10 w-10 text-black/20 mx-auto mb-2" />
-                      <p className="text-xs font-bold text-black/40">Aucun élève enregistré</p>
-                    </div>
-                  ) : (
-                    <div className="space-y-2 max-h-80 overflow-y-auto">
-                      {savedProfiles.map(p => (
-                        <div
-                          key={p.name}
-                          className={`flex items-center gap-3 p-3 border-2 rounded-xl transition-all cursor-pointer ${activeProfile.name === p.name ? "border-black bg-yellow-50 shadow-[3px_3px_0_0_rgba(0,0,0,1)]" : "border-black/20 hover:border-black hover:bg-slate-50"}`}
+                  <div className="space-y-1.5 max-h-80 overflow-y-auto">
+                    {savedProfiles.length === 0
+                      ? <div className="py-6 text-center text-xs text-black/30 font-bold">Aucun élève</div>
+                      : savedProfiles.map(p => (
+                        <div key={p.name}
                           onClick={() => setActiveProfile({ ...p, hwImage: p.hwImageBase64 || p.hwImage || null })}
+                          className={`flex items-center gap-2 p-2.5 border-2 rounded-xl cursor-pointer transition ${activeProfile.name === p.name ? "border-black bg-yellow-50 shadow-[2px_2px_0_rgba(0,0,0,1)]" : "border-black/15 hover:border-black hover:bg-slate-50"}`}
                         >
-                          <div className="w-9 h-9 rounded-full bg-black flex items-center justify-center text-yellow-400 font-black text-sm shrink-0">
-                            {p.name.charAt(0).toUpperCase()}
-                          </div>
+                          <div className="w-8 h-8 rounded-full bg-black text-yellow-400 flex items-center justify-center font-black text-sm shrink-0">{p.name[0]?.toUpperCase()}</div>
                           <div className="flex-1 min-w-0">
-                            <p className="font-black text-sm truncate">{p.name}</p>
-                            <p className="text-[10px] text-black/50 font-bold">{getFontFamily(p.fontKey)} • {p.inkColor}</p>
+                            <p className="font-black text-xs truncate">{p.name}</p>
+                            <p className="text-[9px] text-black/40">{getFontFamily(p.fontKey)}</p>
+                            {p.fingerprint && (
+                              <p className="text-[8px] text-green-600 font-black">
+                                ✦ Empreinte {p.fingerprint.confidenceScore}%
+                              </p>
+                            )}
                           </div>
-                          {activeProfile.name === p.name && (
-                            <CheckCircle className="h-4 w-4 text-black shrink-0" />
-                          )}
-                          <button
-                            onClick={(e) => { e.stopPropagation(); deleteProfile(p.name); }}
-                            className="p-1 rounded-lg hover:bg-red-100 transition-all shrink-0"
-                          >
-                            <Trash2 className="h-3.5 w-3.5 text-red-500" />
+                          {activeProfile.name === p.name && <CheckCircle className="h-3.5 w-3.5 shrink-0" />}
+                          <button onClick={e => { e.stopPropagation(); deleteProfile(p.name); }}
+                            className="p-1 rounded hover:bg-red-100 transition shrink-0">
+                            <Trash2 className="h-3 w-3 text-red-400" />
                           </button>
                         </div>
-                      ))}
-                    </div>
-                  )}
+                      ))
+                    }
+                  </div>
+                  <button onClick={() => setActiveProfile(defaultProfile())}
+                    className="w-full py-2 border-2 border-dashed border-black/20 rounded-xl text-xs font-black text-black/40 hover:border-black hover:text-black hover:bg-yellow-50 transition flex items-center justify-center gap-1">
+                    <Plus className="h-3.5 w-3.5" /> Nouvel élève
+                  </button>
                 </div>
 
-                {/* Profile editor */}
-                <div className="bg-white rounded-3xl border-4 border-black p-6 shadow-[6px_6px_0_0_rgba(0,0,0,1)] space-y-4">
-                  <h3 className="font-black flex items-center gap-2">
-                    <User className="h-4 w-4" /> Profil actif
-                  </h3>
+                {/* Right: profile editor */}
+                <div className="lg:col-span-3 bg-white rounded-2xl border-4 border-black p-5 shadow-[5px_5px_0_rgba(0,0,0,1)] space-y-4 overflow-y-auto max-h-[80vh]">
+                  <h3 className="font-black text-sm flex items-center gap-1.5"><User className="h-4 w-4" /> Profil actif</h3>
 
                   {/* Name */}
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-black text-black/60">NOM DE L'ÉLÈVE</label>
-                    <input
-                      type="text"
-                      value={activeProfile.name}
-                      onChange={e => setActiveProfile(prev => ({ ...prev, name: e.target.value }))}
-                      placeholder="Ex: Ahmed Benali..."
-                      className="w-full border-2 border-black rounded-xl px-3 py-2 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-yellow-400"
-                    />
+                  <div>
+                    <label className="text-[9px] font-black text-black/50">NOM</label>
+                    <input type="text" value={activeProfile.name}
+                      onChange={e => upd("name", e.target.value)}
+                      className="w-full mt-0.5 border-2 border-black rounded-xl px-3 py-2 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-yellow-400"
+                      placeholder="Ex: Ahmed Benali..." />
                   </div>
 
-                  {/* Handwriting sample upload */}
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-black text-black/60">ÉCHANTILLON D'ÉCRITURE (OPTIONNEL)</label>
-                    <label className="block border-2 border-dashed border-black/30 rounded-xl p-3 text-center cursor-pointer hover:bg-yellow-50 transition-all relative">
-                      <input
-                        type="file"
-                        accept="image/*"
-                        className="absolute inset-0 opacity-0 cursor-pointer"
+                  {/* ── Handwriting sample upload — triggers Gemini Vision deep analysis */}
+                  <div>
+                    <label className="text-[9px] font-black text-black/50">
+                      ÉCHANTILLON D'ÉCRITURE — Gemini analyse & reproduit fidèlement
+                    </label>
+                    <label className="mt-0.5 block border-2 border-dashed border-black/20 rounded-xl p-3 text-center cursor-pointer hover:bg-yellow-50 transition relative">
+                      <input type="file" accept="image/*" className="absolute inset-0 opacity-0 cursor-pointer"
                         onChange={e => {
-                          const file = e.target.files?.[0];
-                          if (!file) return;
-                          setActiveProfile(prev => ({ ...prev, hwImageName: file.name }));
-                          const reader = new FileReader();
-                          reader.onload = ev => analyzeHandwriting(ev.target?.result as string);
-                          reader.readAsDataURL(file);
-                        }}
-                      />
-                      {isAnalyzing ? (
-                        <RefreshCw className="h-5 w-5 animate-spin mx-auto text-blue-500" />
-                      ) : activeProfile.hwImage ? (
-                        <div className="flex items-center gap-2 justify-center">
-                          <CheckCircle className="h-4 w-4 text-green-600" />
-                          <span className="text-xs font-black text-green-700 truncate">{activeProfile.hwImageName || "Écriture chargée"}</span>
-                        </div>
-                      ) : (
-                        <>
-                          <Upload className="h-5 w-5 mx-auto text-black/40 mb-1" />
-                          <span className="text-xs font-bold text-black/50">Photo d'écriture manuscrite → Gemini l'analyse</span>
-                        </>
-                      )}
+                          const f = e.target.files?.[0];
+                          if (!f) return;
+                          const r = new FileReader();
+                          r.onload = ev => analyzeHandwriting(ev.target?.result as string, f.name);
+                          r.readAsDataURL(f);
+                        }} />
+                      {isAnalyzing
+                        ? (
+                          <div className="flex flex-col items-center gap-1">
+                            <RefreshCw className="h-5 w-5 animate-spin text-blue-400" />
+                            <p className="text-xs font-black text-blue-600">Gemini analyse l'écriture…</p>
+                            <p className="text-[9px] text-black/40">Extraction de l'empreinte manuscrite</p>
+                          </div>
+                        )
+                        : activeProfile.fingerprint
+                          ? (
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-1.5 justify-center">
+                                <CheckCircle className="h-4 w-4 text-green-600" />
+                                <span className="text-xs font-black text-green-700">Empreinte extraite — {activeProfile.fingerprint.confidenceScore}% confiance</span>
+                              </div>
+                              <p className="text-[9px] text-black/50">{activeProfile.hwImageName || "Image analysée"}</p>
+                              <p className="text-[9px] text-green-600">Taille:{activeProfile.fingerprint.suggestedSize}px · Inclin:{activeProfile.fingerprint.suggestedRotation}° · Messiness:{activeProfile.fingerprint.messinessIntensity.toFixed(1)}</p>
+                            </div>
+                          )
+                          : (
+                            <div className="flex flex-col items-center gap-1">
+                              <BookOpen className="h-5 w-5 text-black/30" />
+                              <p className="text-xs font-black text-black/50">📸 Photo d'écriture → Gemini extrait l'empreinte complète</p>
+                              <p className="text-[9px] text-black/30">Inclinaison · Espacement · Pression · Tremblement · Bavures…</p>
+                            </div>
+                          )
+                      }
                     </label>
                     {activeProfile.analysisDescription && (
-                      <p className="text-[10px] text-green-700 font-bold bg-green-50 rounded-lg px-2 py-1">
-                        ✓ {activeProfile.analysisDescription} (confiance: {activeProfile.confidenceScore}%)
+                      <p className="text-[9px] text-green-700 font-bold bg-green-50 rounded-lg px-2 py-1 mt-1">
+                        ✓ {activeProfile.analysisDescription}
                       </p>
+                    )}
+                    {/* Show fingerprint details when available */}
+                    {activeProfile.fingerprint && (activeProfile.fingerprint.confidenceScore ?? 0) >= 55 && (
+                      <div className="mt-1.5 p-2 bg-blue-50 border border-blue-200 rounded-lg grid grid-cols-3 gap-1">
+                        {[
+                          ["Taille", `${activeProfile.fingerprint.suggestedSize}px`],
+                          ["Inclinaison", `${activeProfile.fingerprint.suggestedRotation}°`],
+                          ["Messiness", `${activeProfile.fingerprint.messinessIntensity.toFixed(1)}/6`],
+                          ["Tremblement", `${activeProfile.fingerprint.baselineWobbleAmp.toFixed(1)}px`],
+                          ["Opacité min", `${Math.round(activeProfile.fingerprint.inkOpacityMin * 100)}%`],
+                          ["Bavures", `${Math.round(activeProfile.fingerprint.inkBleedRadius * 100)}%`],
+                        ].map(([k, v]) => (
+                          <div key={k} className="text-center">
+                            <p className="text-[7px] font-black text-blue-400 uppercase">{k}</p>
+                            <p className="text-[9px] font-black text-blue-800">{v}</p>
+                          </div>
+                        ))}
+                      </div>
                     )}
                   </div>
 
                   {/* Font selection */}
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-black text-black/60">STYLE D'ÉCRITURE</label>
-                    <div className="grid grid-cols-2 gap-1.5">
+                  <div>
+                    <label className="text-[9px] font-black text-black/50">
+                      STYLE D'ÉCRITURE {activeProfile.fingerprint ? "(auto-sélectionné par Gemini)" : ""}
+                    </label>
+                    <div className="grid grid-cols-3 gap-1.5 mt-0.5">
                       {HANDWRITING_FONTS.map(f => (
-                        <button
-                          key={f.key}
-                          onClick={() => setActiveProfile(prev => ({ ...prev, fontKey: f.key }))}
-                          className={`px-2 py-1.5 text-xs border-2 rounded-lg transition-all font-bold ${activeProfile.fontKey === f.key ? "border-black bg-yellow-400 shadow-[2px_2px_0_0_rgba(0,0,0,1)]" : "border-black/20 hover:border-black"}`}
+                        <button key={f.key} onClick={() => upd("fontKey", f.key)}
+                          className={`px-2 py-1.5 text-[10px] border-2 rounded-lg transition font-bold ${activeProfile.fontKey === f.key ? "border-black bg-yellow-400 shadow-[2px_2px_0_rgba(0,0,0,1)]" : "border-black/15 hover:border-black"}`}
                           style={{ fontFamily: f.family }}
-                        >
-                          {f.label}
-                        </button>
+                        >{f.label}</button>
                       ))}
                     </div>
                   </div>
 
                   {/* Ink color */}
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-black text-black/60">COULEUR D'ENCRE</label>
-                    <div className="flex flex-wrap gap-1.5">
+                  <div>
+                    <label className="text-[9px] font-black text-black/50">COULEUR D'ENCRE</label>
+                    <div className="flex flex-wrap gap-1.5 mt-0.5">
                       {INK_COLORS.map(c => (
-                        <button
-                          key={c.value}
-                          title={c.label}
-                          onClick={() => setActiveProfile(prev => ({ ...prev, inkColor: c.value }))}
-                          className={`w-7 h-7 rounded-full border-2 transition-all ${activeProfile.inkColor === c.value ? "border-black scale-110 shadow-[2px_2px_0_0_rgba(0,0,0,1)]" : "border-white hover:border-black"}`}
-                          style={{ background: c.value }}
-                        />
+                        <button key={c.value} title={c.label}
+                          onClick={() => upd("inkColor", c.value)}
+                          className={`w-6 h-6 rounded-full border-2 transition ${activeProfile.inkColor === c.value ? "border-black scale-110" : "border-transparent hover:border-black"}`}
+                          style={{ background: c.value }} />
                       ))}
-                      <div className="relative">
-                        <input
-                          type="color"
-                          value={activeProfile.inkColor}
-                          onChange={e => setActiveProfile(prev => ({ ...prev, inkColor: e.target.value }))}
-                          className="w-7 h-7 rounded-full border-2 border-black cursor-pointer opacity-0 absolute inset-0"
-                        />
-                        <div className="w-7 h-7 rounded-full border-2 border-black flex items-center justify-center text-[8px] font-black" style={{ background: activeProfile.inkColor }}>
-                          HEX
+                      <label className="w-6 h-6 rounded-full border-2 border-black cursor-pointer relative overflow-hidden">
+                        <input type="color" value={activeProfile.inkColor} onChange={e => upd("inkColor", e.target.value)} className="absolute inset-0 opacity-0 w-full h-full cursor-pointer" />
+                        <div className="w-full h-full rounded-full" style={{ background: activeProfile.inkColor }} />
+                      </label>
+                    </div>
+                  </div>
+
+                  {/* Writing quality sliders — shown even if fingerprint active (allow fine-tuning) */}
+                  <div>
+                    <label className="text-[9px] font-black text-black/50 flex items-center gap-1">
+                      <Sliders className="h-3 w-3" /> AJUSTEMENTS MANUELS
+                      {activeProfile.fingerprint && <span className="text-blue-500">(priorité à l'empreinte si ≥55%)</span>}
+                    </label>
+                    <div className="space-y-1.5 mt-1">
+                      {[
+                        { k: "messinessIntensity" as const, label: "Désordre",    min: 0,  max: 6,   step: 0.1 },
+                        { k: "fontSize"           as const, label: "Taille",      min: 11, max: 26,  step: 0.5 },
+                        { k: "wordDrift"          as const, label: "Oscillation", min: 0,  max: 5,   step: 0.1 },
+                        { k: "lineWobbleAmp"      as const, label: "Tremblement", min: 0,  max: 5,   step: 0.1 },
+                        { k: "penThickness"       as const, label: "Épaisseur",   min: 0.5,max: 3.5, step: 0.1 },
+                      ].map(s => (
+                        <div key={s.k} className="flex items-center gap-2">
+                          <span className="text-[9px] font-black text-black/40 w-24 shrink-0">{s.label}</span>
+                          <input type="range" min={s.min} max={s.max} step={s.step}
+                            value={activeProfile[s.k] as number}
+                            onChange={e => upd(s.k, parseFloat(e.target.value))}
+                            className="flex-1 accent-black h-1.5 rounded" />
+                          <span className="text-[9px] font-black w-7 text-right">{(activeProfile[s.k] as number).toFixed(1)}</span>
                         </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Realism effects */}
+                  <div>
+                    <label className="text-[9px] font-black text-black/50 flex items-center gap-1">
+                      <Zap className="h-3 w-3" /> EFFETS RÉALISME
+                    </label>
+                    <div className="grid grid-cols-2 gap-2 mt-1.5">
+
+                      {/* Ratures */}
+                      <div className={`p-2.5 border-2 rounded-xl transition cursor-pointer ${activeProfile.enableRatures ? "border-black bg-red-50" : "border-black/15"}`}
+                        onClick={() => upd("enableRatures", !activeProfile.enableRatures)}>
+                        <div className="flex items-center gap-1.5">
+                          <div className={`w-4 h-4 rounded border-2 border-black flex items-center justify-center ${activeProfile.enableRatures ? "bg-black" : "bg-white"}`}>
+                            {activeProfile.enableRatures && <span className="text-yellow-400 text-[8px] font-black">✓</span>}
+                          </div>
+                          <p className="text-[10px] font-black">Ratures</p>
+                        </div>
+                        {activeProfile.enableRatures && (
+                          <input type="range" min={0.01} max={0.15} step={0.01}
+                            value={activeProfile.raturesRate}
+                            onChange={e => { e.stopPropagation(); upd("raturesRate", parseFloat(e.target.value)); }}
+                            onClick={e => e.stopPropagation()}
+                            className="w-full mt-1.5 accent-red-500 h-1 rounded" />
+                        )}
+                      </div>
+
+                      {/* Blanco */}
+                      <div className={`p-2.5 border-2 rounded-xl transition cursor-pointer ${activeProfile.enableBlanco ? "border-black bg-orange-50" : "border-black/15"}`}
+                        onClick={() => upd("enableBlanco", !activeProfile.enableBlanco)}>
+                        <div className="flex items-center gap-1.5">
+                          <div className={`w-4 h-4 rounded border-2 border-black flex items-center justify-center ${activeProfile.enableBlanco ? "bg-black" : "bg-white"}`}>
+                            {activeProfile.enableBlanco && <span className="text-yellow-400 text-[8px] font-black">✓</span>}
+                          </div>
+                          <p className="text-[10px] font-black">Blanco / Correcteur</p>
+                        </div>
+                        {activeProfile.enableBlanco && (
+                          <input type="range" min={0.01} max={0.1} step={0.01}
+                            value={activeProfile.blancoRate}
+                            onChange={e => { e.stopPropagation(); upd("blancoRate", parseFloat(e.target.value)); }}
+                            onClick={e => e.stopPropagation()}
+                            className="w-full mt-1.5 accent-orange-500 h-1 rounded" />
+                        )}
+                      </div>
+
+                      {/* Smudges */}
+                      <div className={`p-2.5 border-2 rounded-xl transition cursor-pointer ${activeProfile.enableSmudges ? "border-black bg-blue-50" : "border-black/15"}`}
+                        onClick={() => upd("enableSmudges", !activeProfile.enableSmudges)}>
+                        <div className="flex items-center gap-1.5">
+                          <div className={`w-4 h-4 rounded border-2 border-black flex items-center justify-center ${activeProfile.enableSmudges ? "bg-black" : "bg-white"}`}>
+                            {activeProfile.enableSmudges && <span className="text-yellow-400 text-[8px] font-black">✓</span>}
+                          </div>
+                          <p className="text-[10px] font-black">Bavures d'encre</p>
+                        </div>
+                        <p className="text-[9px] text-black/40 mt-0.5">Taches encre naturelles</p>
+                      </div>
+
+                      {/* Pressure */}
+                      <div className={`p-2.5 border-2 rounded-xl transition cursor-pointer ${activeProfile.enablePressureVar ? "border-black bg-purple-50" : "border-black/15"}`}
+                        onClick={() => upd("enablePressureVar", !activeProfile.enablePressureVar)}>
+                        <div className="flex items-center gap-1.5">
+                          <div className={`w-4 h-4 rounded border-2 border-black flex items-center justify-center ${activeProfile.enablePressureVar ? "bg-black" : "bg-white"}`}>
+                            {activeProfile.enablePressureVar && <span className="text-yellow-400 text-[8px] font-black">✓</span>}
+                          </div>
+                          <p className="text-[10px] font-black">Pression stylo</p>
+                        </div>
+                        <p className="text-[9px] text-black/40 mt-0.5">Variation d'opacité</p>
+                      </div>
+
+                      {/* Wobble */}
+                      <div className={`p-2.5 border-2 rounded-xl transition cursor-pointer ${activeProfile.enableLineWobble ? "border-black bg-green-50" : "border-black/15"}`}
+                        onClick={() => upd("enableLineWobble", !activeProfile.enableLineWobble)}>
+                        <div className="flex items-center gap-1.5">
+                          <div className={`w-4 h-4 rounded border-2 border-black flex items-center justify-center ${activeProfile.enableLineWobble ? "bg-black" : "bg-white"}`}>
+                            {activeProfile.enableLineWobble && <span className="text-yellow-400 text-[8px] font-black">✓</span>}
+                          </div>
+                          <p className="text-[10px] font-black">Lignes obliques</p>
+                        </div>
+                        {activeProfile.enableLineWobble && (
+                          <input type="range" min={0} max={5} step={0.1}
+                            value={activeProfile.lineWobbleAmp}
+                            onChange={e => { e.stopPropagation(); upd("lineWobbleAmp", parseFloat(e.target.value)); }}
+                            onClick={e => e.stopPropagation()}
+                            className="w-full mt-1.5 accent-green-600 h-1 rounded" />
+                        )}
+                      </div>
+
+                      {/* Ink dry skip */}
+                      <div className={`p-2.5 border-2 rounded-xl transition cursor-pointer ${activeProfile.inkDrySkipping ? "border-black bg-yellow-50" : "border-black/15"}`}
+                        onClick={() => upd("inkDrySkipping", !activeProfile.inkDrySkipping)}>
+                        <div className="flex items-center gap-1.5">
+                          <div className={`w-4 h-4 rounded border-2 border-black flex items-center justify-center ${activeProfile.inkDrySkipping ? "bg-black" : "bg-white"}`}>
+                            {activeProfile.inkDrySkipping && <span className="text-yellow-400 text-[8px] font-black">✓</span>}
+                          </div>
+                          <p className="text-[10px] font-black">Encre qui saute</p>
+                        </div>
+                        <p className="text-[9px] text-black/40 mt-0.5">Lettres s'effaçant</p>
                       </div>
                     </div>
                   </div>
 
-                  {/* Advanced style sliders */}
-                  <details className="group">
-                    <summary className="cursor-pointer text-[10px] font-black text-black/60 flex items-center gap-1">
-                      <Settings className="h-3 w-3" /> PARAMÈTRES AVANCÉS
-                    </summary>
-                    <div className="mt-2 space-y-2">
-                      {[
-                        { label: "Taille", key: "fontSize" as const, min: 12, max: 26, step: 0.5 },
-                        { label: "Inclinaison", key: "rotationAngle" as const, min: -8, max: 8, step: 0.5 },
-                        { label: "Décalage mots", key: "wordDrift" as const, min: 0, max: 5, step: 0.1 },
-                        { label: "Messiness", key: "messinessIntensity" as const, min: 0, max: 6, step: 0.1 },
-                        { label: "Épaisseur", key: "penThickness" as const, min: 0.5, max: 3, step: 0.1 },
-                      ].map(s => (
-                        <div key={s.key} className="flex items-center gap-2">
-                          <span className="text-[9px] font-black text-black/50 w-20">{s.label}</span>
-                          <input
-                            type="range" min={s.min} max={s.max} step={s.step}
-                            value={activeProfile[s.key] as number}
-                            onChange={e => setActiveProfile(prev => ({ ...prev, [s.key]: parseFloat(e.target.value) }))}
-                            className="flex-1 h-1.5 rounded accent-black"
-                          />
-                          <span className="text-[9px] font-black w-8 text-right">{(activeProfile[s.key] as number).toFixed(1)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </details>
-
-                  {/* Handwriting preview */}
-                  <div className="border-2 border-black/10 rounded-xl p-3 bg-slate-50 min-h-[60px]">
-                    <p className="text-[8px] font-black text-black/30 mb-1">APERÇU :</p>
-                    <div>
-                      {renderDeformedText("Bonjour, voici mon écriture personnelle.", "preview", activeProfile, variantSeed)}
-                    </div>
+                  {/* Live preview */}
+                  <div className="border-2 border-black/10 rounded-xl p-3 bg-zinc-50 min-h-14">
+                    <p className="text-[8px] font-black text-black/25 mb-1">APERÇU ÉCRITURE LIVE :</p>
+                    <HandwrittenText
+                      text="Voici mon écriture personnelle avec les effets activés pour ce test."
+                      qId="preview-live" profile={activeProfile} variantSeed={variantSeed} />
                   </div>
 
-                  {/* Save button */}
-                  <button
-                    onClick={() => saveProfile(activeProfile)}
-                    disabled={!activeProfile.name.trim() || isSavingProfile}
-                    className="w-full py-2.5 bg-black text-yellow-400 border-2 border-black rounded-xl font-black text-xs shadow-[4px_4px_0_0_rgba(0,0,0,0.2)] hover:translate-y-[1px] hover:shadow-none transition-all flex items-center justify-center gap-2 disabled:opacity-50"
-                  >
-                    {isSavingProfile ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-                    SAUVEGARDER DANS MONGODB
+                  <button onClick={() => saveProfile(activeProfile)} disabled={!activeProfile.name.trim() || isSaving}
+                    className="w-full py-2.5 bg-black text-yellow-400 border-2 border-black rounded-xl font-black text-xs flex items-center justify-center gap-2 disabled:opacity-50 hover:bg-zinc-800 transition">
+                    {isSaving ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                    SAUVEGARDER LE PROFIL
                   </button>
                 </div>
               </div>
 
-              {/* Continue button */}
-              <div className="flex justify-center gap-4 pt-2">
-                <button
-                  onClick={() => setStep("import")}
-                  className="flex items-center gap-2 px-6 py-3 border-2 border-black rounded-xl font-black text-sm hover:bg-yellow-50 transition-all"
-                >
+              <div className="flex justify-center gap-3 pt-1">
+                <button onClick={() => setStep("import")} className="flex items-center gap-1.5 px-5 py-2.5 border-2 border-black rounded-xl font-black text-sm hover:bg-yellow-50 transition">
                   <ChevronLeft className="h-4 w-4" /> Retour
                 </button>
                 <button
                   onClick={() => {
-                    if (isRealUpload && detectedQuestions.length === 0) {
-                      // Need to detect questions first
-                      setStep("solve");
-                    } else {
-                      setStep("grade");
-                    }
+                    if (isRealUpload && questions.length === 0) setStep("solve");
+                    else setStep("grade");
                   }}
                   disabled={!activeProfile.name.trim()}
-                  className="flex items-center gap-2 px-8 py-3 bg-black text-yellow-400 border-2 border-black rounded-xl font-black text-sm shadow-[4px_4px_0_0_rgba(0,0,0,1)] hover:translate-y-[1px] hover:shadow-none transition-all disabled:opacity-50"
+                  className="flex items-center gap-1.5 px-7 py-2.5 bg-black text-yellow-400 border-2 border-black rounded-xl font-black text-sm shadow-[4px_4px_0_rgba(0,0,0,1)] hover:translate-y-px hover:shadow-none transition disabled:opacity-50"
                 >
                   Continuer <ChevronRight className="h-4 w-4" />
                 </button>
@@ -1193,131 +1444,99 @@ export default function App() {
             </motion.div>
           )}
 
-          {/* ════════════════════════════════════════════════════════════════
-              STEP 3 — SELECT GRADE
-          ════════════════════════════════════════════════════════════════ */}
+          {/* ════════════════════════════════════════════
+              STEP 3 — GRADE
+          ════════════════════════════════════════════ */}
           {step === "grade" && (
-            <motion.div key="grade"
-              initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }}
-              className="space-y-6 max-w-3xl mx-auto"
+            <motion.div key="grade" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -16 }}
+              className="space-y-5 max-w-2xl mx-auto pt-6"
             >
-              <div className="text-center space-y-2 py-4">
-                <h2 className="text-3xl font-black">Note cible</h2>
-                <p className="text-black/60 font-bold">Sélectionnez le niveau pour {activeProfile.name}</p>
+              <div className="text-center">
+                <h2 className="text-2xl font-black">Note cible</h2>
+                <p className="text-sm font-bold text-black/50 mt-1">
+                  Niveau pour <span className="text-black">{activeProfile.name}</span>
+                  {activeProfile.fingerprint && (
+                    <span className="ml-2 text-blue-600">(empreinte {activeProfile.fingerprint.confidenceScore}%)</span>
+                  )}
+                </p>
               </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid grid-cols-2 gap-4">
                 {EXAM_CRITERIA_LEVELS.map(lvl => (
-                  <button
-                    key={lvl.level}
-                    onClick={() => setCriteriaLevel(lvl.level)}
-                    className={`p-5 border-4 rounded-2xl text-left transition-all ${criteriaLevel === lvl.level ? "border-black bg-yellow-400 shadow-[6px_6px_0_0_rgba(0,0,0,1)] translate-y-[-2px]" : "border-black/20 hover:border-black bg-white hover:shadow-[4px_4px_0_0_rgba(0,0,0,1)]"}`}
-                  >
-                    <div className="flex items-center gap-3 mb-2">
+                  <button key={lvl.level} onClick={() => setCriteriaLevel(lvl.level)}
+                    className={`p-4 border-4 rounded-2xl text-left transition ${criteriaLevel === lvl.level ? "border-black bg-yellow-400 shadow-[5px_5px_0_rgba(0,0,0,1)] -translate-y-0.5" : "border-black/15 hover:border-black bg-white"}`}>
+                    <div className="flex items-center gap-2 mb-1">
                       <span className="text-2xl font-black">{lvl.level}</span>
-                      <span className="font-black text-sm">{lvl.title.split("(")[1]?.replace(")", "") || ""}</span>
-                      {criteriaLevel === lvl.level && <CheckCircle className="h-5 w-5 ml-auto" />}
+                      {criteriaLevel === lvl.level && <CheckCircle className="h-4 w-4 ml-auto" />}
                     </div>
-                    <p className="text-xs text-black/60 font-bold">{lvl.description}</p>
+                    <p className="text-xs font-black">{lvl.title.split("(")[1]?.replace(")", "") ?? ""}</p>
+                    <p className="text-[10px] text-black/50 mt-0.5">{lvl.description.substring(0, 80)}…</p>
                   </button>
                 ))}
               </div>
-
-              {/* Variant seed */}
               <div className="bg-white rounded-2xl border-2 border-black p-4 flex items-center gap-4">
                 <div className="flex-1">
                   <p className="font-black text-sm">Variante #{variantSeed}</p>
-                  <p className="text-[10px] text-black/50 font-bold">Chaque variante produit des réponses uniques pour le même niveau</p>
+                  <p className="text-[10px] text-black/40">Chaque variante = réponses différentes pour le même niveau</p>
                 </div>
-                <button
-                  onClick={() => setVariantSeed(s => (s % 10) + 1)}
-                  className="px-3 py-2 bg-black text-yellow-400 rounded-xl font-black text-xs border-2 border-black hover:bg-zinc-800 transition-all flex items-center gap-1"
-                >
+                <button onClick={() => setVariantSeed(s => (s % 10) + 1)}
+                  className="px-3 py-2 bg-black text-yellow-400 rounded-xl font-black text-xs border-2 border-black flex items-center gap-1 hover:bg-zinc-800 transition">
                   <RefreshCw className="h-3 w-3" /> Changer
                 </button>
               </div>
-
-              <div className="flex justify-center gap-4">
-                <button onClick={() => setStep("students")} className="flex items-center gap-2 px-6 py-3 border-2 border-black rounded-xl font-black text-sm hover:bg-yellow-50 transition-all">
+              <div className="flex justify-center gap-3">
+                <button onClick={() => setStep("students")} className="flex items-center gap-1.5 px-5 py-2.5 border-2 border-black rounded-xl font-black text-sm hover:bg-yellow-50 transition">
                   <ChevronLeft className="h-4 w-4" /> Retour
                 </button>
-                <button onClick={() => setStep("solve")} className="flex items-center gap-2 px-8 py-3 bg-black text-yellow-400 border-2 border-black rounded-xl font-black text-sm shadow-[4px_4px_0_0_rgba(0,0,0,1)] hover:translate-y-[1px] hover:shadow-none transition-all">
+                <button onClick={() => setStep("solve")}
+                  className="flex items-center gap-1.5 px-7 py-2.5 bg-black text-yellow-400 border-2 border-black rounded-xl font-black text-sm shadow-[4px_4px_0_rgba(0,0,0,1)] hover:translate-y-px hover:shadow-none transition">
                   Résoudre avec Gemini <ChevronRight className="h-4 w-4" />
                 </button>
               </div>
             </motion.div>
           )}
 
-          {/* ════════════════════════════════════════════════════════════════
-              STEP 4 — SOLVE: Gemini reads + generates answers
-          ════════════════════════════════════════════════════════════════ */}
+          {/* ════════════════════════════════════════════
+              STEP 4 — SOLVE
+          ════════════════════════════════════════════ */}
           {step === "solve" && (
-            <motion.div key="solve"
-              initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }}
-              className="space-y-6 max-w-3xl mx-auto"
+            <motion.div key="solve" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -16 }}
+              className="space-y-5 max-w-2xl mx-auto pt-6"
             >
-              <div className="text-center space-y-2 py-4">
-                <h2 className="text-3xl font-black">Résolution AI</h2>
-                <p className="text-black/60 font-bold">
-                  Gemini lit les questions et génère les réponses pour{" "}
-                  <span className="text-black font-black">{activeProfile.name}</span> — niveau {criteriaLevel}
+              <div className="text-center">
+                <h2 className="text-2xl font-black">Résolution AI</h2>
+                <p className="text-sm text-black/50 font-bold mt-1">
+                  Gemini lit et répond pour <span className="text-black font-black">{activeProfile.name}</span> — niveau {criteriaLevel}
                 </p>
               </div>
 
-              {/* Sub-step: detect questions first (only for real uploads) */}
-              {isRealUpload && detectedQuestions.length === 0 && (
-                <div className="bg-white rounded-3xl border-4 border-black p-6 shadow-[6px_6px_0_0_rgba(0,0,0,1)] space-y-4">
-                  <h3 className="font-black flex items-center gap-2">
-                    <Search className="h-4 w-4" /> Étape 1: Lecture des questions
-                  </h3>
-                  <p className="text-sm font-bold text-black/60">
-                    Gemini va analyser les {evalPages.length} page(s) de l'évaluation et détecter toutes les questions automatiquement.
-                  </p>
-                  {detectError && (
-                    <div className="flex items-center gap-2 p-3 bg-red-50 border-2 border-red-300 rounded-xl">
-                      <AlertCircle className="h-4 w-4 text-red-500 shrink-0" />
-                      <p className="text-xs font-bold text-red-600">{detectError}</p>
+              {/* Detect questions (real upload only) */}
+              {isRealUpload && questions.length === 0 && (
+                <div className="bg-white rounded-2xl border-4 border-black p-5 shadow-[5px_5px_0_rgba(0,0,0,1)] space-y-4">
+                  <h3 className="font-black flex items-center gap-2"><Search className="h-4 w-4" /> Étape 1 : Lecture des questions</h3>
+                  <p className="text-sm text-black/50">Gemini analyse {evalPages.length} page(s) et détecte toutes les questions.</p>
+                  {detectErr && (
+                    <div className="flex items-center gap-2 p-3 bg-red-50 border-2 border-red-200 rounded-xl">
+                      <AlertCircle className="h-4 w-4 text-red-500" />
+                      <p className="text-xs font-bold text-red-600">{detectErr}</p>
                     </div>
                   )}
-                  <button
-                    onClick={detectQuestions}
-                    disabled={isDetecting}
-                    className="w-full py-4 bg-blue-500 text-white border-2 border-black rounded-2xl font-black text-sm shadow-[4px_4px_0_0_rgba(0,0,0,1)] hover:translate-y-[1px] hover:shadow-none transition-all flex items-center justify-center gap-3 disabled:opacity-60"
-                  >
-                    {isDetecting ? (
-                      <><RefreshCw className="h-5 w-5 animate-spin" /> Gemini analyse les pages...</>
-                    ) : (
-                      <><Search className="h-5 w-5" /> Détecter les questions</>
-                    )}
+                  <button onClick={detectQuestions} disabled={isDetecting}
+                    className="w-full py-4 bg-blue-500 text-white border-2 border-black rounded-2xl font-black text-sm shadow-[4px_4px_0_rgba(0,0,0,1)] hover:translate-y-px hover:shadow-none transition flex items-center justify-center gap-2 disabled:opacity-60">
+                    {isDetecting ? <><RefreshCw className="h-5 w-5 animate-spin" /> Analyse en cours…</> : <><Search className="h-5 w-5" /> Détecter les questions</>}
                   </button>
                 </div>
               )}
 
-              {/* Detected questions list */}
-              {detectedQuestions.length > 0 && (
-                <div className="bg-white rounded-3xl border-4 border-black p-6 shadow-[6px_6px_0_0_rgba(0,0,0,1)] space-y-3">
-                  <div className="flex items-center justify-between">
-                    <h3 className="font-black flex items-center gap-2">
-                      <CheckCircle className="h-4 w-4 text-green-600" />
-                      {detectedQuestions.length} questions détectées
-                    </h3>
-                    {isRealUpload && (
-                      <button
-                        onClick={() => { setDetectedQuestions([]); }}
-                        className="text-xs font-black text-black/40 hover:text-black flex items-center gap-1 transition-all"
-                      >
-                        <RotateCcw className="h-3 w-3" /> Relancer
-                      </button>
-                    )}
-                  </div>
-                  <div className="space-y-1.5 max-h-60 overflow-y-auto">
-                    {detectedQuestions.map((q, i) => (
-                      <div key={q.id} className="flex items-start gap-2 p-2 bg-slate-50 rounded-lg border border-black/10">
-                        <span className="text-[10px] font-black text-black/50 mt-0.5 shrink-0">Q{i + 1}</span>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-xs font-bold text-black truncate">{q.text}</p>
-                          <p className="text-[9px] text-black/40">Page {q.pageIndex + 1} • pos ({q.x.toFixed(0)}%, {q.y.toFixed(0)}%)</p>
-                        </div>
+              {/* Questions list */}
+              {questions.length > 0 && (
+                <div className="bg-white rounded-2xl border-4 border-black p-5 shadow-[5px_5px_0_rgba(0,0,0,1)] space-y-2">
+                  <h3 className="font-black flex items-center gap-2"><CheckCircle className="h-4 w-4 text-green-600" /> {questions.length} questions détectées</h3>
+                  <div className="space-y-1 max-h-52 overflow-y-auto">
+                    {questions.map((q, i) => (
+                      <div key={q.id} className="flex items-start gap-2 p-2 bg-slate-50 rounded-lg">
+                        <span className="text-[9px] font-black text-black/40 mt-0.5 w-5 shrink-0">Q{i + 1}</span>
+                        <p className="text-xs font-bold truncate flex-1">{q.text}</p>
+                        <span className="text-[9px] text-black/30 shrink-0">p.{q.pageIndex + 1}</span>
                       </div>
                     ))}
                   </div>
@@ -1325,269 +1544,220 @@ export default function App() {
               )}
 
               {/* Generate button */}
-              {detectedQuestions.length > 0 && (
-                <div className="bg-white rounded-3xl border-4 border-black p-6 shadow-[6px_6px_0_0_rgba(0,0,0,1)] space-y-4">
-                  <h3 className="font-black flex items-center gap-2">
-                    <Sparkles className="h-4 w-4 text-yellow-500" /> Étape 2: Génération des réponses
-                  </h3>
-                  <div className="flex items-center gap-3 p-3 bg-yellow-50 border-2 border-black/20 rounded-xl">
-                    <div className="w-8 h-8 rounded-full bg-black flex items-center justify-center text-yellow-400 font-black text-sm">
-                      {activeProfile.name.charAt(0)}
-                    </div>
+              {questions.length > 0 && (
+                <div className="bg-white rounded-2xl border-4 border-black p-5 shadow-[5px_5px_0_rgba(0,0,0,1)] space-y-4">
+                  <h3 className="font-black flex items-center gap-2"><Sparkles className="h-4 w-4 text-yellow-500" /> Génération des réponses</h3>
+                  <div className="flex items-center gap-3 p-3 bg-yellow-50 border-2 border-black/10 rounded-xl">
+                    <div className="w-8 h-8 bg-black rounded-full flex items-center justify-center text-yellow-400 font-black text-sm">{activeProfile.name[0]?.toUpperCase()}</div>
                     <div>
                       <p className="font-black text-sm">{activeProfile.name}</p>
-                      <p className="text-[10px] text-black/50 font-bold">
-                        Niveau {criteriaLevel} • Variante #{variantSeed} • {getFontFamily(activeProfile.fontKey)}
+                      <p className="text-[9px] text-black/40">
+                        Niveau {criteriaLevel} • Var.{variantSeed} • {getFontFamily(activeProfile.fontKey)}
+                        {activeProfile.fingerprint && ` • Empreinte ${activeProfile.fingerprint.confidenceScore}%`}
                       </p>
                     </div>
                   </div>
-
-                  {generateError && (
-                    <div className="flex items-center gap-2 p-3 bg-red-50 border-2 border-red-300 rounded-xl">
-                      <AlertCircle className="h-4 w-4 text-red-500 shrink-0" />
-                      <p className="text-xs font-bold text-red-600">{generateError}</p>
+                  {genErr && (
+                    <div className="flex items-center gap-2 p-3 bg-red-50 border-2 border-red-200 rounded-xl">
+                      <AlertCircle className="h-4 w-4 text-red-500" />
+                      <p className="text-xs font-bold text-red-600">{genErr}</p>
                     </div>
                   )}
-
-                  <button
-                    onClick={generateAnswers}
-                    disabled={isGenerating}
-                    className="w-full py-5 bg-yellow-400 text-black border-4 border-black rounded-2xl font-black text-lg shadow-[6px_6px_0_0_rgba(0,0,0,1)] hover:translate-y-[2px] hover:shadow-[3px_3px_0_0_rgba(0,0,0,1)] transition-all flex items-center justify-center gap-3 disabled:opacity-60"
-                  >
-                    {isGenerating ? (
-                      <><RefreshCw className="h-6 w-6 animate-spin" /> Gemini génère les réponses...</>
-                    ) : (
-                      <><Sparkles className="h-6 w-6" /> RÉSOUDRE AVEC GEMINI</>
-                    )}
+                  <button onClick={generateAnswers} disabled={isGenerating}
+                    className="w-full py-5 bg-yellow-400 text-black border-4 border-black rounded-2xl font-black text-xl shadow-[6px_6px_0_rgba(0,0,0,1)] hover:translate-y-0.5 hover:shadow-[3px_3px_0_rgba(0,0,0,1)] transition flex items-center justify-center gap-3 disabled:opacity-60">
+                    {isGenerating ? <><RefreshCw className="h-6 w-6 animate-spin" /> Gemini génère…</> : <><Sparkles className="h-6 w-6" /> RÉSOUDRE AVEC GEMINI</>}
                   </button>
-                  <p className="text-[10px] text-center text-black/40 font-bold">
-                    Réponses uniques pour {activeProfile.name} • Sauvegardées dans MongoDB
-                  </p>
                 </div>
               )}
 
-              <div className="flex justify-center gap-4">
-                <button onClick={() => setStep("grade")} className="flex items-center gap-2 px-6 py-3 border-2 border-black rounded-xl font-black text-sm hover:bg-yellow-50 transition-all">
+              <div className="flex justify-center">
+                <button onClick={() => setStep("grade")} className="flex items-center gap-1.5 px-5 py-2.5 border-2 border-black rounded-xl font-black text-sm hover:bg-yellow-50 transition">
                   <ChevronLeft className="h-4 w-4" /> Retour
                 </button>
               </div>
             </motion.div>
           )}
 
-          {/* ════════════════════════════════════════════════════════════════
-              STEP 5 — PREVIEW: See eval pages with handwriting overlaid
-          ════════════════════════════════════════════════════════════════ */}
+          {/* ════════════════════════════════════════════
+              STEP 5 — PREVIEW
+          ════════════════════════════════════════════ */}
           {step === "preview" && (
-            <motion.div key="preview"
-              initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }}
+            <motion.div key="preview" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -16 }}
               className="space-y-4"
             >
-              <div className="flex flex-wrap items-center justify-between gap-3 no-print">
-                <h2 className="text-xl font-black">Aperçu — {activeProfile.name}</h2>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => setEditMode(m => !m)}
-                    className={`flex items-center gap-1.5 px-3 py-2 border-2 border-black rounded-xl font-black text-xs transition-all ${editMode ? "bg-blue-400 shadow-[3px_3px_0_0_rgba(0,0,0,1)]" : "bg-white hover:bg-blue-50"}`}
-                  >
-                    <Move className="h-3.5 w-3.5" />
-                    {editMode ? "Mode Déplacement ON" : "Déplacer textes"}
+              {/* Toolbar */}
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-xl font-black">
+                  Aperçu — {activeProfile.name}
+                  {activeProfile.fingerprint && (
+                    <span className="ml-2 text-sm font-bold text-blue-600">
+                      (empreinte {activeProfile.fingerprint.confidenceScore}%)
+                    </span>
+                  )}
+                </h2>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button onClick={() => setEditMode(m => !m)}
+                    className={`flex items-center gap-1.5 px-3 py-2 border-2 border-black rounded-xl font-black text-xs transition ${editMode ? "bg-blue-400 shadow-[2px_2px_0_rgba(0,0,0,1)]" : "bg-white hover:bg-blue-50"}`}>
+                    <Move className="h-3.5 w-3.5" /> {editMode ? "Dépl. ON" : "Déplacer"}
                   </button>
-                  <button
-                    onClick={() => setOffsets({})}
-                    className="flex items-center gap-1 px-3 py-2 border-2 border-black rounded-xl font-black text-xs hover:bg-yellow-50 transition-all bg-white"
-                  >
-                    <RotateCcw className="h-3.5 w-3.5" /> Reset positions
+                  <button onClick={() => setOffsets({})}
+                    className="flex items-center gap-1 px-3 py-2 border-2 border-black rounded-xl font-black text-xs hover:bg-yellow-50 bg-white transition">
+                    <RotateCcw className="h-3.5 w-3.5" /> Reset
                   </button>
-                  <button
-                    onClick={() => setStep("solve")}
-                    className="flex items-center gap-1 px-3 py-2 border-2 border-black rounded-xl font-black text-xs hover:bg-yellow-50 transition-all bg-white"
-                  >
+                  <button onClick={() => { setAnswers({}); setStep("solve"); }}
+                    className="flex items-center gap-1 px-3 py-2 border-2 border-black rounded-xl font-black text-xs hover:bg-yellow-50 bg-white transition">
                     <RefreshCw className="h-3.5 w-3.5" /> Régénérer
                   </button>
-                  <button
-                    onClick={() => setStep("print")}
-                    className="flex items-center gap-2 px-4 py-2 bg-black text-yellow-400 border-2 border-black rounded-xl font-black text-xs shadow-[3px_3px_0_0_rgba(0,0,0,1)] hover:translate-y-[1px] hover:shadow-none transition-all"
-                  >
+                  <button onClick={() => setStep("print")}
+                    className="flex items-center gap-2 px-4 py-2 bg-black text-yellow-400 border-2 border-black rounded-xl font-black text-xs shadow-[2px_2px_0_rgba(0,0,0,1)] hover:translate-y-px hover:shadow-none transition">
                     <Printer className="h-3.5 w-3.5" /> Imprimer
                   </button>
                 </div>
               </div>
 
-              {/* Page navigation */}
+              {/* Page thumbnails */}
               {displayPages.length > 1 && (
-                <div className="flex items-center justify-center gap-3 no-print">
-                  <button onClick={() => setCurrentPageIdx(p => Math.max(0, p - 1))} disabled={currentPageIdx === 0} className="p-2 border-2 border-black rounded-lg disabled:opacity-30 hover:bg-yellow-50 transition-all">
-                    <ChevronLeft className="h-4 w-4" />
-                  </button>
-                  <div className="flex gap-1.5">
-                    {displayPages.map((_, i) => (
-                      <button key={i} onClick={() => setCurrentPageIdx(i)}
-                        className={`w-8 h-8 rounded-lg border-2 font-black text-xs transition-all ${i === currentPageIdx ? "border-black bg-yellow-400 shadow-[2px_2px_0_0_rgba(0,0,0,1)]" : "border-black/20 hover:border-black"}`}
-                      >{i + 1}</button>
-                    ))}
-                  </div>
-                  <button onClick={() => setCurrentPageIdx(p => Math.min(displayPages.length - 1, p + 1))} disabled={currentPageIdx === displayPages.length - 1} className="p-2 border-2 border-black rounded-lg disabled:opacity-30 hover:bg-yellow-50 transition-all">
-                    <ChevronRight className="h-4 w-4" />
-                  </button>
+                <div className="flex items-center gap-2 overflow-x-auto pb-1">
+                  {displayPages.map((pg, i) => (
+                    <button key={i} onClick={() => setPreviewPage(i)}
+                      className={`shrink-0 relative border-2 rounded-lg overflow-hidden transition ${previewPage === i ? "border-black shadow-[2px_2px_0_rgba(0,0,0,1)] scale-105" : "border-black/20 hover:border-black"}`}
+                      style={{ width: 64 }}
+                    >
+                      {pg.base64
+                        ? <img src={pg.base64} alt={`p${i + 1}`} className="w-full h-16 object-cover" />
+                        : <div className="w-16 h-20 bg-slate-100 flex items-center justify-center text-xs font-black text-black/30">P.{i + 1}</div>}
+                      <div className="absolute bottom-0 inset-x-0 bg-black/70 text-white text-[8px] text-center font-black py-0.5">
+                        P.{i + 1} {questions.filter(q => q.pageIndex === i).length > 0 && `(${questions.filter(q => q.pageIndex === i).length}Q)`}
+                      </div>
+                    </button>
+                  ))}
                 </div>
               )}
 
-              {/* Main preview area */}
-              <div className="flex gap-4">
-                {/* Page preview */}
-                <div className="flex-1 max-w-2xl mx-auto">
-                  <div
-                    id="print-area"
-                    className="bg-white shadow-2xl rounded-lg overflow-hidden"
-                    style={{ border: editMode ? "2px dashed #3b82f6" : "none" }}
-                  >
-                    {displayPages.length > 0 && displayPages[currentPageIdx] && (
-                      <EvalPageViewer
-                        page={displayPages[currentPageIdx]}
-                        questions={detectedQuestions}
-                        answers={generatedAnswers}
-                        profile={activeProfile}
-                        variantSeed={variantSeed}
-                        editMode={editMode}
-                        offsets={offsets}
-                        onOffsetChange={handleOffsetChange}
-                        isRealUpload={isRealUpload}
-                      />
-                    )}
-                    {/* For preloaded templates with no base64, render a placeholder */}
-                    {usePreloaded && (!displayPages[0]?.base64 || displayPages[0].base64 === "") && (
-                      <PreloadedPageRenderer
-                        templateId={preloadedTemplateId}
-                        questions={detectedQuestions}
-                        answers={generatedAnswers}
-                        profile={activeProfile}
-                        variantSeed={variantSeed}
-                        editMode={editMode}
-                        offsets={offsets}
-                        onOffsetChange={handleOffsetChange}
-                      />
-                    )}
-                  </div>
+              {/* Main preview + sidebar */}
+              <div className="flex gap-4 items-start">
+                <div className="flex-1 max-w-2xl mx-auto shadow-2xl rounded-lg overflow-hidden">
+                  <HandwritingLayer
+                    pages={displayPages}
+                    questions={questions}
+                    answers={answers}
+                    profile={activeProfile}
+                    variantSeed={variantSeed}
+                    editMode={editMode}
+                    offsets={offsets}
+                    onOffsetChange={handleOffsetChange}
+                    pageIndex={previewPage}
+                  />
                 </div>
 
                 {/* Answer editor sidebar */}
-                <div className="w-72 shrink-0 hidden lg:block no-print">
-                  <div className="bg-white rounded-2xl border-4 border-black p-4 shadow-[4px_4px_0_0_rgba(0,0,0,1)] space-y-3 sticky top-24">
-                    <h3 className="font-black text-sm flex items-center gap-2">
-                      <Edit3 className="h-4 w-4" /> Réponses générées
-                    </h3>
-                    <div className="space-y-2 max-h-[60vh] overflow-y-auto">
-                      {detectedQuestions
-                        .filter(q => q.pageIndex === currentPageIdx)
-                        .map(q => (
-                          <div key={q.id} className="space-y-1">
-                            <label className="text-[9px] font-black text-black/50 block truncate">{q.text.substring(0, 50)}...</label>
-                            <textarea
-                              value={generatedAnswers[q.id] || ""}
-                              onChange={e => setGeneratedAnswers(prev => ({ ...prev, [q.id]: e.target.value }))}
-                              className="w-full border-2 border-black/20 rounded-lg p-2 text-xs font-bold focus:outline-none focus:border-black resize-none"
-                              rows={3}
-                            />
-                          </div>
-                        ))}
-                      {detectedQuestions.filter(q => q.pageIndex === currentPageIdx).length === 0 && (
-                        <p className="text-xs text-black/40 font-bold text-center py-4">Aucune réponse pour cette page</p>
+                <div className="w-64 shrink-0 hidden xl:block">
+                  <div className="bg-white rounded-2xl border-4 border-black p-4 shadow-[4px_4px_0_rgba(0,0,0,1)] space-y-3 sticky top-24">
+                    <h3 className="font-black text-xs flex items-center gap-1.5"><Edit3 className="h-3.5 w-3.5" /> Réponses — p.{previewPage + 1}</h3>
+                    <div className="space-y-2 max-h-[65vh] overflow-y-auto">
+                      {questions.filter(q => q.pageIndex === previewPage).map(q => (
+                        <div key={q.id}>
+                          <label className="text-[8px] font-black text-black/40 block truncate">{q.text.substring(0, 45)}…</label>
+                          <textarea
+                            value={answers[q.id] ?? ""}
+                            onChange={e => setAnswers(prev => ({ ...prev, [q.id]: e.target.value }))}
+                            rows={3}
+                            className="w-full border-2 border-black/15 rounded-lg p-2 text-xs focus:outline-none focus:border-black resize-none mt-0.5"
+                          />
+                        </div>
+                      ))}
+                      {questions.filter(q => q.pageIndex === previewPage).length === 0 && (
+                        <p className="text-xs text-black/30 text-center py-4">Aucune réponse pour cette page</p>
                       )}
                     </div>
                   </div>
                 </div>
               </div>
 
-              <div className="flex justify-center gap-4 no-print pt-2">
-                <button onClick={() => setStep("grade")} className="flex items-center gap-2 px-6 py-3 border-2 border-black rounded-xl font-black text-sm hover:bg-yellow-50 transition-all">
-                  <ChevronLeft className="h-4 w-4" /> Modifier grade
+              <div className="flex justify-center gap-3 pt-2">
+                <button onClick={() => setStep("grade")} className="flex items-center gap-1.5 px-5 py-2.5 border-2 border-black rounded-xl font-black text-sm hover:bg-yellow-50 transition">
+                  <ChevronLeft className="h-4 w-4" /> Modifier
                 </button>
-                <button onClick={() => setStep("print")} className="flex items-center gap-2 px-8 py-3 bg-black text-yellow-400 border-2 border-black rounded-xl font-black text-sm shadow-[4px_4px_0_0_rgba(0,0,0,1)] hover:translate-y-[1px] hover:shadow-none transition-all">
-                  <Printer className="h-4 w-4" /> Imprimer
+                <button onClick={() => setStep("print")}
+                  className="flex items-center gap-2 px-7 py-2.5 bg-black text-yellow-400 border-2 border-black rounded-xl font-black text-sm shadow-[4px_4px_0_rgba(0,0,0,1)] hover:translate-y-px hover:shadow-none transition">
+                  <Printer className="h-4 w-4" /> Imprimer ({displayPages.length} pages)
                 </button>
               </div>
             </motion.div>
           )}
 
-          {/* ════════════════════════════════════════════════════════════════
+          {/* ════════════════════════════════════════════
               STEP 6 — PRINT
-          ════════════════════════════════════════════════════════════════ */}
+          ════════════════════════════════════════════ */}
           {step === "print" && (
-            <motion.div key="print"
-              initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }}
-              className="space-y-6 max-w-2xl mx-auto"
+            <motion.div key="print" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -16 }}
+              className="space-y-5 max-w-xl mx-auto pt-6"
             >
-              <div className="text-center space-y-2 py-4">
-                <h2 className="text-3xl font-black">Impression</h2>
-                <p className="text-black/60 font-bold">
-                  Résultat 100% réaliste — impression parfaite pour {activeProfile.name}
-                </p>
+              <div className="text-center">
+                <h2 className="text-2xl font-black">Impression</h2>
+                <p className="text-sm text-black/50 font-bold mt-1">Toutes les pages — 100% réaliste</p>
               </div>
 
-              <div className="bg-white rounded-3xl border-4 border-black p-6 shadow-[6px_6px_0_0_rgba(0,0,0,1)] space-y-4">
-                <div className="grid grid-cols-2 gap-3 text-sm">
-                  <div className="p-3 bg-slate-50 rounded-xl border border-black/10">
-                    <p className="text-[10px] font-black text-black/50">ÉLÈVE</p>
-                    <p className="font-black">{activeProfile.name}</p>
-                  </div>
-                  <div className="p-3 bg-slate-50 rounded-xl border border-black/10">
-                    <p className="text-[10px] font-black text-black/50">NIVEAU</p>
-                    <p className="font-black">{criteriaLevel}/8</p>
-                  </div>
-                  <div className="p-3 bg-slate-50 rounded-xl border border-black/10">
-                    <p className="text-[10px] font-black text-black/50">STYLE</p>
-                    <p className="font-black">{getFontFamily(activeProfile.fontKey)}</p>
-                  </div>
-                  <div className="p-3 bg-slate-50 rounded-xl border border-black/10">
-                    <p className="text-[10px] font-black text-black/50">PAGES</p>
-                    <p className="font-black">{displayPages.length}</p>
-                  </div>
+              <div className="bg-white rounded-2xl border-4 border-black p-6 shadow-[5px_5px_0_rgba(0,0,0,1)] space-y-4">
+                <div className="grid grid-cols-2 gap-3">
+                  {[
+                    ["Élève",           activeProfile.name],
+                    ["Niveau",          `${criteriaLevel}/8`],
+                    ["Style police",    getFontFamily(activeProfile.fontKey)],
+                    ["Pages",           `${displayPages.length} page(s)`],
+                    ["Empreinte",       activeProfile.fingerprint ? `${activeProfile.fingerprint.confidenceScore}% confiance` : "Manuelle"],
+                    ["Ratures",        activeProfile.enableRatures ? "✓ Activé" : "—"],
+                    ["Blanco",         activeProfile.enableBlanco  ? "✓ Activé" : "—"],
+                    ["Bavures",        activeProfile.enableSmudges ? "✓ Activé" : "—"],
+                  ].map(([k, v]) => (
+                    <div key={k} className="p-2.5 bg-slate-50 rounded-xl">
+                      <p className="text-[9px] font-black text-black/40">{k}</p>
+                      <p className="font-black text-sm">{v}</p>
+                    </div>
+                  ))}
                 </div>
 
-                <div className="border-2 border-black/10 rounded-xl p-4 bg-green-50 space-y-2">
-                  <p className="font-black text-sm text-green-800 flex items-center gap-2">
-                    <CheckCircle className="h-4 w-4" /> Prêt pour impression
-                  </p>
-                  <ul className="text-xs text-green-700 font-bold space-y-1">
-                    <li>✓ Réponses générées par Gemini AI selon le niveau {criteriaLevel}</li>
-                    <li>✓ Écriture authentique — aucun effet ordinateur visible</li>
-                    <li>✓ {isRealUpload ? "Pages originales sans modifications" : "Template préchargé"}</li>
-                    <li>✓ Sauvegardé dans MongoDB pour réutilisation</li>
-                  </ul>
+                {activeProfile.fingerprint && (
+                  <div className="p-3 bg-blue-50 border-2 border-blue-200 rounded-xl space-y-1">
+                    <p className="font-black text-xs text-blue-800 flex items-center gap-1.5">
+                      <Eye className="h-3.5 w-3.5" /> Deep Handwriting Engine actif
+                    </p>
+                    <p className="text-[9px] text-blue-600">
+                      Inclinaison: {activeProfile.fingerprint.suggestedRotation}° •
+                      Tremblement: {activeProfile.fingerprint.baselineWobbleAmp.toFixed(1)}px •
+                      Pression: {Math.round(activeProfile.fingerprint.inkOpacityMin * 100)}–{Math.round(activeProfile.fingerprint.inkOpacityMax * 100)}%
+                    </p>
+                    <p className="text-[9px] text-blue-600">
+                      16 paramètres extraits de l'écriture réelle de {activeProfile.name}
+                    </p>
+                  </div>
+                )}
+
+                <div className="p-4 bg-green-50 border-2 border-green-200 rounded-xl space-y-1">
+                  <p className="font-black text-sm text-green-800 flex items-center gap-2"><CheckCircle className="h-4 w-4" /> Prêt pour impression</p>
+                  <p className="text-xs text-green-600">✓ Réponses Gemini sur toutes les pages</p>
+                  <p className="text-xs text-green-600">✓ Écriture unique à {activeProfile.name}</p>
+                  <p className="text-xs text-green-600">✓ Effets réalisme : ratures, pression, wobble, bavures</p>
+                  {activeProfile.fingerprint && (
+                    <p className="text-xs text-green-600">✓ Empreinte graphologique {activeProfile.fingerprint.confidenceScore}% — haute fidélité</p>
+                  )}
                 </div>
 
-                <button
-                  onClick={() => {
-                    // All pages printed
-                    window.print();
-                  }}
-                  className="w-full py-5 bg-black text-yellow-400 border-4 border-black rounded-2xl font-black text-xl shadow-[6px_6px_0_0_rgba(250,204,21,1)] hover:translate-y-[2px] hover:shadow-[3px_3px_0_0_rgba(250,204,21,1)] transition-all flex items-center justify-center gap-3"
-                >
-                  <Printer className="h-6 w-6" /> IMPRIMER
+                <button onClick={() => window.print()}
+                  className="w-full py-5 bg-black text-yellow-400 border-4 border-black rounded-2xl font-black text-xl shadow-[6px_6px_0_rgba(250,204,21,1)] hover:translate-y-0.5 hover:shadow-[3px_3px_0_rgba(250,204,21,1)] transition flex items-center justify-center gap-3">
+                  <Printer className="h-6 w-6" /> IMPRIMER TOUTES LES PAGES
                 </button>
 
-                <div className="flex gap-3">
-                  <button onClick={() => setStep("preview")} className="flex-1 py-2.5 border-2 border-black rounded-xl font-black text-xs hover:bg-yellow-50 transition-all flex items-center justify-center gap-1">
+                <div className="flex gap-2">
+                  <button onClick={() => setStep("preview")} className="flex-1 py-2 border-2 border-black rounded-xl font-black text-xs hover:bg-yellow-50 transition flex items-center justify-center gap-1">
                     <ChevronLeft className="h-3.5 w-3.5" /> Aperçu
                   </button>
-                  <button
-                    onClick={() => {
-                      setStep("students");
-                      setVariantSeed(s => (s % 10) + 1);
-                    }}
-                    className="flex-1 py-2.5 border-2 border-black rounded-xl font-black text-xs hover:bg-yellow-50 transition-all flex items-center justify-center gap-1"
-                  >
+                  <button onClick={() => { setStep("students"); setVariantSeed(s => (s % 10) + 1); }}
+                    className="flex-1 py-2 border-2 border-black rounded-xl font-black text-xs hover:bg-yellow-50 transition flex items-center justify-center gap-1">
                     <Plus className="h-3.5 w-3.5" /> Autre élève
                   </button>
-                  <button
-                    onClick={() => {
-                      setStep("import");
-                      setEvalPages([]);
-                      setDetectedQuestions([]);
-                      setGeneratedAnswers({});
-                    }}
-                    className="flex-1 py-2.5 border-2 border-black rounded-xl font-black text-xs hover:bg-yellow-50 transition-all flex items-center justify-center gap-1"
-                  >
+                  <button onClick={() => { setStep("import"); setEvalPages([]); setQuestions([]); setAnswers({}); }}
+                    className="flex-1 py-2 border-2 border-black rounded-xl font-black text-xs hover:bg-yellow-50 transition flex items-center justify-center gap-1">
                     <RotateCcw className="h-3.5 w-3.5" /> Nouvelle éval
                   </button>
                 </div>
@@ -1597,128 +1767,6 @@ export default function App() {
 
         </AnimatePresence>
       </main>
-
-      {/* ── PRINT-ONLY AREA — all pages ── */}
-      <div className="hidden print:block" id="print-area">
-        {displayPages.map((page, i) => (
-          <div
-            key={i}
-            className="relative bg-white"
-            style={{
-              width: "210mm",
-              minHeight: "297mm",
-              pageBreakAfter: i < displayPages.length - 1 ? "always" : "auto",
-              overflow: "hidden",
-            }}
-          >
-            {page.base64 && (
-              <img
-                src={page.base64}
-                alt={`Page ${page.pageNum}`}
-                style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain" }}
-              />
-            )}
-            {detectedQuestions
-              .filter(q => q.pageIndex === i)
-              .map(q => {
-                const answer = generatedAnswers[q.id];
-                if (!answer) return null;
-                const off = offsets[q.id] || { x: 0, y: 0 };
-                return (
-                  <div
-                    key={q.id}
-                    style={{
-                      position: "absolute",
-                      left: `${q.x}%`,
-                      top: `${q.y}%`,
-                      transform: `translate(${off.x}px, ${off.y}px)`,
-                      maxWidth: "80%",
-                      userSelect: "none",
-                    }}
-                  >
-                    {renderDeformedText(answer, q.id, activeProfile, variantSeed)}
-                  </div>
-                );
-              })}
-          </div>
-        ))}
-      </div>
-
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// PRELOADED PAGE RENDERER — renders prebuilt templates with answers
-// ─────────────────────────────────────────────────────────────────────────────
-interface PreloadedPageRendererProps {
-  templateId: string;
-  questions: DetectedQuestion[];
-  answers: Record<string, string>;
-  profile: StudentProfile;
-  variantSeed: number;
-  editMode: boolean;
-  offsets: Record<string, { x: number; y: number }>;
-  onOffsetChange: (qId: string, dx: number, dy: number) => void;
-}
-
-function PreloadedPageRenderer({ templateId, questions, answers, profile, variantSeed, editMode, offsets, onOffsetChange }: PreloadedPageRendererProps) {
-  const template = PRELOADED_TEMPLATES.find(t => t.id === templateId);
-  if (!template) return null;
-
-  // Draw the preloaded template background using the canvas approach
-  return (
-    <div
-      className="relative bg-white"
-      style={{ width: "100%", aspectRatio: "210/297", overflow: "hidden" }}
-    >
-      {/* Preloaded background template — simple A4 lined paper */}
-      <div
-        className="absolute inset-0"
-        style={{
-          background: "#fafaf9",
-          backgroundImage: `linear-gradient(0deg, #e5e7eb 1px, transparent 1px)`,
-          backgroundSize: "100% 32px",
-        }}
-      />
-      {/* Template title */}
-      <div
-        style={{
-          position: "absolute",
-          top: "3%",
-          left: "5%",
-          right: "5%",
-          fontSize: "10px",
-          fontFamily: "var(--font-sans)",
-          fontWeight: 900,
-          color: "#000",
-          borderBottom: "2px solid #000",
-          paddingBottom: "4px",
-        }}
-      >
-        {template.title}
-      </div>
-
-      {/* Answers */}
-      {questions.map(q => {
-        const answer = answers[q.id];
-        if (!answer) return null;
-        const off = offsets[q.id] || { x: 0, y: 0 };
-        return (
-          <div
-            key={q.id}
-            style={{
-              position: "absolute",
-              left: `${q.x}%`,
-              top: `${q.y}%`,
-              transform: `translate(${off.x}px, ${off.y}px)`,
-              maxWidth: "80%",
-            }}
-          >
-            {renderDeformedText(answer, q.id, profile, variantSeed)}
-          </div>
-        );
-      })}
     </div>
   );
 }
