@@ -1571,7 +1571,10 @@ export default function App() {
   };
 
   const generateAnswers = async (fromPreview = false) => {
-    if (!questions.length) return;
+    if (!questions.length) {
+      setGenErr("Aucune question détectée. Allez à l'étape 'Résoudre' et détectez d'abord les questions.");
+      return;
+    }
     setIsGenerating(true); setGenErr("");
     try {
       const r = await fetch("/api/generate-answers", {
@@ -1583,20 +1586,55 @@ export default function App() {
       });
       if (!r.ok) {
         const text = await r.text().catch(() => "");
-        setGenErr(`Erreur serveur (${r.status}). ${text.substring(0, 120)}`);
+        setGenErr(`Erreur serveur (${r.status}). ${text.substring(0, 200)}`);
         setIsGenerating(false);
         return;
       }
       const d = await r.json();
-      if (d.success && d.answers) {
-        setAnswers(d.answers); setOffsets({});
-        const firstPage = questions.filter(q => d.answers[q.id]).reduce((min, q) => Math.min(min, q.pageIndex), 0);
-        setPreviewPage(firstPage);
-        setGenErr("");
-        // Always go to preview; if already there just stay
-        setStep("preview");
-        // Switch sidebar to "Réponses" panel to show filled answers
-        setSidePanel("position");
+      if (d.success) {
+        const rawAnswers: Record<string, string> = d.answers || {};
+        // Normalize: try direct match first, then case-insensitive, then positional
+        const normalized: Record<string, string> = {};
+        questions.forEach((q, idx) => {
+          if (rawAnswers[q.id]) {
+            normalized[q.id] = rawAnswers[q.id];
+          } else {
+            // Try case-insensitive match
+            const ciKey = Object.keys(rawAnswers).find(k => k.toLowerCase() === q.id.toLowerCase());
+            if (ciKey) { normalized[q.id] = rawAnswers[ciKey]; return; }
+            // Try partial match (e.g. "q1" matches "ex1_q1")
+            const partialKey = Object.keys(rawAnswers).find(k =>
+              k.includes(q.id) || q.id.includes(k) ||
+              k.replace(/[^0-9]/g,'') === (idx+1).toString()
+            );
+            if (partialKey) { normalized[q.id] = rawAnswers[partialKey]; return; }
+            // Positional fallback: assign by order
+            const answerValues = Object.values(rawAnswers);
+            if (answerValues[idx]) { normalized[q.id] = answerValues[idx]; }
+          }
+        });
+        if (Object.keys(normalized).length > 0) {
+          setAnswers(normalized); setOffsets({});
+          const firstPage = questions.filter(q => normalized[q.id]).reduce((min, q) => Math.min(min, q.pageIndex), 0);
+          setPreviewPage(firstPage);
+          setGenErr("");
+          setStep("preview");
+          setSidePanel("position");
+        } else {
+          // Force positional assignment if still empty
+          const forcedAnswers: Record<string, string> = {};
+          const allVals = Object.values(rawAnswers);
+          questions.forEach((q, i) => {
+            if (allVals[i]) forcedAnswers[q.id] = allVals[i];
+          });
+          if (Object.keys(forcedAnswers).length > 0) {
+            setAnswers(forcedAnswers); setOffsets({});
+            setStep("preview"); setSidePanel("position");
+            setGenErr("");
+          } else {
+            setGenErr(`Généré mais IDs non correspondants. Réponses brutes: ${JSON.stringify(rawAnswers).substring(0,200)}`);
+          }
+        }
       } else {
         setGenErr(d.error || "Erreur lors de la génération des réponses.");
       }
@@ -2710,56 +2748,90 @@ ${nameOv}${buildAnswers(pi)}</div>`;
                       </div>
                     </div>
 
-                    {/* Editable answers panel */}
-                    {questions.filter(q => q.pageIndex === previewPage).length > 0 && (
+                    {/* Editable answers panel — always visible when questions exist */}
+                    {questions.length > 0 && (
                       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
                         <div className="px-3 py-2 border-b border-slate-100 flex items-center gap-1.5">
                           <Edit3 className="h-3 w-3 text-indigo-500" />
-                          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wide flex-1">Réponses — Page {previewPage + 1}</p>
-                          {/* Quick re-generate button */}
-                          {questions.length > 0 && (
-                            <button
-                              onClick={() => generateAnswers(true)}
-                              disabled={isGenerating}
-                              title="Générer / Regénérer les réponses avec Gemini"
-                              className="flex items-center gap-1 px-2 py-1 bg-indigo-500 text-white rounded-lg text-[9px] font-bold hover:bg-indigo-600 transition disabled:opacity-50">
-                              {isGenerating
-                                ? <RefreshCw className="h-2.5 w-2.5 animate-spin" />
-                                : <Sparkles className="h-2.5 w-2.5" />}
-                              {isGenerating ? "…" : "Générer"}
-                            </button>
-                          )}
+                          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wide flex-1">
+                            RéPONSES
+                            <span className="ml-1 font-normal text-slate-400">
+                              ({Object.values(batchMode && currentBatch ? currentBatch.answers : answers).filter(Boolean).length}/{questions.length})
+                            </span>
+                          </p>
+                          {/* Generate button — always visible */}
+                          <button
+                            onClick={() => generateAnswers(true)}
+                            disabled={isGenerating}
+                            title="Générer / Regénérer toutes les réponses avec Gemini"
+                            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[9px] font-bold transition ${
+                              isGenerating
+                                ? "bg-indigo-100 text-indigo-500 cursor-wait"
+                                : "bg-indigo-500 text-white hover:bg-indigo-600"
+                            }`}>
+                            {isGenerating
+                              ? <RefreshCw className="h-3 w-3 animate-spin" />
+                              : <Sparkles className="h-3 w-3" />}
+                            {isGenerating ? "En cours…" : "Générer"}
+                          </button>
                         </div>
-                        {/* Always show textareas for all questions on this page */}
+                        {/* Error in preview */}
+                        {genErr && (
+                          <div className="mx-3 mt-2 p-2 bg-red-50 border border-red-200 rounded-lg">
+                            <div className="flex items-start gap-1.5">
+                              <AlertCircle className="h-3 w-3 text-red-500 shrink-0 mt-0.5" />
+                              <p className="text-[9px] font-medium text-red-600 flex-1 break-words">{genErr}</p>
+                            </div>
+                            <button onClick={() => setGenErr("")} className="text-[8px] text-red-400 underline mt-0.5">Fermer</button>
+                          </div>
+                        )}
+                        {/* Loading */}
+                        {isGenerating && (
+                          <div className="mx-3 mt-2 mb-1 p-2 bg-indigo-50 border border-indigo-100 rounded-lg flex items-center gap-2">
+                            <RefreshCw className="h-3.5 w-3.5 text-indigo-500 animate-spin shrink-0" />
+                            <div>
+                              <p className="text-[9px] text-indigo-700 font-bold">Gemini rédige les réponses…</p>
+                              <p className="text-[8px] text-indigo-400">{questions.length} questions · niveau {criteriaLevel} · {activeProfile.name}</p>
+                            </div>
+                          </div>
+                        )}
+                        {/* All questions — shown always */}
                         <div className="p-3 space-y-2 max-h-64 overflow-y-auto">
-                          {/* Show generate CTA if no answers yet */}
-                          {!batchMode && Object.keys(answers).filter(k => answers[k]).length === 0 && !isGenerating && (
-                            <div className="p-3 bg-indigo-50 border border-indigo-100 rounded-xl text-center space-y-2 mb-2">
-                              <Sparkles className="h-6 w-6 text-indigo-300 mx-auto" />
-                              <p className="text-[10px] font-bold text-indigo-700">Aucune réponse générée</p>
+                          {/* No answers CTA */}
+                          {!batchMode && Object.values(answers).filter(Boolean).length === 0 && !isGenerating && (
+                            <div className="p-3 bg-gradient-to-br from-indigo-50 to-purple-50 border border-indigo-200 rounded-xl text-center space-y-2">
+                              <div className="flex items-center justify-center gap-2">
+                                <Sparkles className="h-5 w-5 text-indigo-400" />
+                                <p className="text-xs font-black text-indigo-700">{questions.length} question{questions.length !== 1 ? 's' : ''} prête{questions.length !== 1 ? 's' : ''}</p>
+                              </div>
+                              <p className="text-[9px] text-indigo-500">Cliquez Générer pour que Gemini écrive les réponses automatiquement dans chaque case</p>
                               <button onClick={() => generateAnswers(true)} disabled={isGenerating}
-                                className="w-full py-2 bg-indigo-500 text-white rounded-lg font-bold text-xs flex items-center justify-center gap-1.5 disabled:opacity-50 hover:bg-indigo-600 transition">
-                                <Sparkles className="h-3 w-3" /> Générer avec Gemini
+                                className="w-full py-2.5 bg-indigo-500 text-white rounded-xl font-black text-xs flex items-center justify-center gap-2 shadow-lg shadow-indigo-200 hover:bg-indigo-600 transition">
+                                <Sparkles className="h-3.5 w-3.5" /> Générer avec Gemini
                               </button>
                             </div>
                           )}
-                          {isGenerating && (
-                            <div className="p-3 bg-indigo-50 border border-indigo-100 rounded-xl text-center space-y-1 mb-2">
-                              <RefreshCw className="h-5 w-5 text-indigo-400 mx-auto animate-spin" />
-                              <p className="text-[10px] font-bold text-indigo-600">Gemini génère les réponses…</p>
-                            </div>
-                          )}
-                          {questions.filter(q => q.pageIndex === previewPage).map(q => {
+                          {questions.map((q, qi) => {
                             const val = batchMode && currentBatch ? (currentBatch.answers[q.id] ?? "") : (answers[q.id] ?? "");
+                            const isCurrentPage = q.pageIndex === previewPage;
                             return (
-                              <div key={q.id} className={`space-y-1 p-1.5 rounded-lg border ${
-                                val ? "border-emerald-200 bg-emerald-50/40" : "border-slate-100 bg-slate-50"
+                              <div key={q.id} className={`space-y-1 p-1.5 rounded-lg border transition ${
+                                val ? "border-emerald-200 bg-emerald-50/40" : isCurrentPage ? "border-indigo-200 bg-indigo-50/30" : "border-slate-100 bg-slate-50"
                               }`}>
-                                <label className="text-[9px] font-bold block truncate" title={q.text}>
-                                  <span className={val ? "text-emerald-600" : "text-slate-400"}>
-                                    {val ? "✅" : "⏳"} {q.id} — {q.text.substring(0, 35)}{q.text.length > 35 ? "…" : ""}
-                                  </span>
-                                </label>
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    onClick={() => setPreviewPage(q.pageIndex)}
+                                    className={`text-[8px] font-bold px-1 py-0.5 rounded shrink-0 ${
+                                      isCurrentPage ? "bg-indigo-500 text-white" : "bg-slate-200 text-slate-500 hover:bg-indigo-200"
+                                    }`}>
+                                    P.{q.pageIndex + 1}
+                                  </button>
+                                  <label className="text-[9px] font-bold flex-1 truncate cursor-default" title={q.text}>
+                                    <span className={val ? "text-emerald-600" : "text-slate-400"}>
+                                      {val ? "✅" : "⏳"} {q.text.substring(0, 30)}{q.text.length > 30 ? "…" : ""}
+                                    </span>
+                                  </label>
+                                </div>
                                 <div className="flex gap-1 items-start">
                                   <textarea
                                     value={val}
