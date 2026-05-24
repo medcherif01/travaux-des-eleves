@@ -1,82 +1,110 @@
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Caveat:wght@400;600;700&family=Kalam:wght@400;700&family=Shadows+Into+Light&family=Indie+Flower&family=Architects+Daughter&family=Schoolbell&family=Parisienne&family=Allura&family=Homemade+Apple&family=Bad+Script&family=Marck+Script&family=La+Belle+Aurore&display=swap');
+/* 
+ * nanobanana — Styles CSS
+ * Polices UNIQUEMENT manuscrites — aucune police standard
+ */
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Parisienne&family=Allura&family=Homemade+Apple&family=Bad+Script&family=Marck+Script&family=La+Belle+Aurore&display=swap');
 @import "tailwindcss";
 
 @theme {
+  /* Interface font (uniquement pour l'UI, jamais dans les copies) */
   --font-sans: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
-  --font-caveat: "Caveat", cursive;
-  --font-kalam: "Kalam", cursive;
-  --font-shadows: "Shadows Into Light", cursive;
-  --font-indie: "Indie Flower", cursive;
-  --font-architects: "Architects Daughter", cursive;
-  --font-schoolbell: "Schoolbell", cursive;
-  --font-parisienne: "Parisienne", cursive;
-  --font-allura: "Allura", cursive;
-  --font-homemade: "Homemade Apple", cursive;
-  --font-badscript: "Bad Script", cursive;
-  --font-marck: "Marck Script", cursive;
-  --font-la-belle: "La Belle Aurore", cursive;
+  
+  /* Polices manuscrites élèves — la seule sélection autorisée */
+  --font-homemade:   "Homemade Apple",  cursive;
+  --font-marck:      "Marck Script",    cursive;
+  --font-parisienne: "Parisienne",      cursive;
+  --font-allura:     "Allura",          cursive;
+  --font-la-belle:   "La Belle Aurore", cursive;
+  --font-badscript:  "Bad Script",      cursive;
 }
 
-/* Custom handwriting utility utilities */
-.handwriting-caveat { font-family: "Caveat", cursive; }
-.handwriting-kalam { font-family: "Kalam", cursive; }
-.handwriting-shadows { font-family: "Shadows Into Light", cursive; }
-.handwriting-indie { font-family: "Indie Flower", cursive; }
-.handwriting-architects { font-family: "Architects Daughter", cursive; }
-.handwriting-schoolbell { font-family: "Schoolbell", cursive; }
-.handwriting-parisienne { font-family: "Parisienne", cursive; }
-.handwriting-allura { font-family: "Allura", cursive; }
-.handwriting-homemade { font-family: "Homemade Apple", cursive; }
-.handwriting-badscript { font-family: "Bad Script", cursive; }
-.handwriting-marck { font-family: "Marck Script", cursive; }
-.handwriting-la-belle { font-family: "La Belle Aurore", cursive; }
+/* ── Utility classes pour les polices manuscrites ── */
+.font-homemade   { font-family: var(--font-homemade)   !important; }
+.font-marck      { font-family: var(--font-marck)      !important; }
+.font-parisienne { font-family: var(--font-parisienne) !important; }
+.font-allura     { font-family: var(--font-allura)     !important; }
+.font-la-belle   { font-family: var(--font-la-belle)   !important; }
+.font-badscript  { font-family: var(--font-badscript)  !important; }
 
+/* Alias alternatifs */
+.handwriting-homemade   { font-family: var(--font-homemade);   }
+.handwriting-marck      { font-family: var(--font-marck);      }
+.handwriting-parisienne { font-family: var(--font-parisienne); }
+.handwriting-allura     { font-family: var(--font-allura);     }
+.handwriting-la-belle   { font-family: var(--font-la-belle);   }
+.handwriting-badscript  { font-family: var(--font-badscript);  }
+
+/* ── Body (interface uniquement) ── */
 body {
   background-color: #f8fafc;
   color: #1e293b;
   font-family: var(--font-sans);
 }
 
-/* Dotted background matching paper sheet grids */
+/* ── Papier grille / pointillés ── */
 .bg-grid-pattern {
   background-size: 24px 24px;
   background-image: radial-gradient(circle, #cbd5e1 1.2px, transparent 1.2px);
 }
 
-/* French school notebook ruling (Seyès) */
+/* ── Papier Seyès (cahier français) ── */
 .bg-seyyes-pattern {
   background-color: #fafaf9;
   background-image: 
-    /* Pink margin on the left (around 80px) */
     linear-gradient(90deg, transparent 89px, #f43f5e 89px, #f43f5e 91px, transparent 91px),
-    /* Main baseline purple lines every 32px */
     linear-gradient(0deg, #818cf8 1.5px, transparent 1.5px),
-    /* Vertical grid lines every 32px */
     linear-gradient(90deg, rgba(129, 140, 248, 0.15) 1px, transparent 1px),
-    /* Secondary auxiliary lines every 8px */
     linear-gradient(0deg, rgba(129, 140, 248, 0.25) 0.8px, transparent 0.8px);
   background-size: 100% 100%, 100% 32px, 32px 100%, 100% 8px;
 }
 
-/* Classic French math class squared paper (Petits carreaux) */
+/* ── Petits carreaux (5mm) ── */
 .bg-carreaux-pattern {
   background-color: #faf8f5;
   background-image: 
-    /* Red/pink vertical margin line */
     linear-gradient(90deg, transparent 89px, #f43f5e 89px, #f43f5e 90.5px, transparent 90.5px),
-    /* Grid horizontal and vertical lines (5mm / 20px squares) */
     linear-gradient(0deg, #d1d5db 1px, transparent 1px),
     linear-gradient(90deg, #d1d5db 1px, transparent 1px);
   background-size: 100% 100%, 20px 20px, 20px 20px;
 }
 
-/* Smooth organic ink soaking blend */
+/* ── Effet d'encre qui s'imprègne sur le papier ── */
 .ink-soaking {
   filter: drop-shadow(0.1px 0.1px 0.2px rgba(0,0,0,0.4));
   letter-spacing: -0.01em;
   font-weight: 500;
 }
 
+/* ── Effet crayon graphite ── */
+.pencil-effect {
+  filter: 
+    url(#pencil-texture)
+    drop-shadow(0.3px 0.3px 0.5px rgba(0,0,0,0.25));
+  opacity: 0.85;
+}
+
+/* ── Effet aquarelle ── */
+.watercolor-effect {
+  filter: url(#watercolor-wash);
+  opacity: 0.8;
+}
+
+/* ── Effet crayon de couleur / craie ── */
+.crayon-effect {
+  filter: url(#crayon-texture);
+  opacity: 0.9;
+  letter-spacing: 0.02em;
+}
+
+/* ── Variante de texture pour les schémas au crayon ── */
+.pencil-drawing {
+  filter: 
+    drop-shadow(0px 0px 1px rgba(70,70,70,0.6))
+    blur(0.2px);
+  opacity: 0.75;
+}
+
+/* ── Impression A4 ── */
 @media print {
   @page {
     size: A4 portrait;
@@ -96,7 +124,6 @@ body {
     print-color-adjust: exact !important;
   }
 
-  /* Hide app bar header, settings panels drawers and floating help menus */
   header, aside, footer, button, .action-toolbar, .print\:hidden {
     display: none !important;
     visibility: hidden !important;
@@ -104,8 +131,7 @@ body {
     overflow: hidden !important;
   }
 
-  /* Expand main and remove screens colors/borders */
-  main, .lg:col-span-7, .bg-grid-pattern, .bg-black\/15 {
+  main, .lg\:col-span-7, .bg-grid-pattern, .bg-black\/15 {
     background: none !important;
     background-color: white !important;
     border: none !important;
@@ -117,7 +143,6 @@ body {
     overflow: visible !important;
   }
 
-  /* Style worksheet print document to snap exactly onto A4 page boundaries */
   #printed-worksheet-paper {
     background-color: white !important;
     background: white !important;
@@ -139,11 +164,9 @@ body {
     z-index: 1000 !important;
   }
 
-  /* Hide bounding boxes on hover during printing */
   .group, .hover\:border-violet-300, .border-dashed, .border-transparent {
     border-color: transparent !important;
     background-color: transparent !important;
     box-shadow: none !important;
   }
 }
-
