@@ -84,6 +84,11 @@ interface GeometryShape {
   x3?: number; y3?: number; radius?: number;
   startAngle?: number; endAngle?: number;
   label?: string; strokeColor?: string; strokeWidth?: number; pencilNoise?: number;
+  // transform
+  rotation?: number;   // degrees around centroid
+  offsetX?: number;    // drag offset in SVG units
+  offsetY?: number;
+  showMeasure?: boolean; // show length/angle
 }
 
 interface PageEffectOverrides {
@@ -466,29 +471,166 @@ function PageRealism({ pi, pageQ, answers, profile, variantSeed, effects, filter
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GEOMETRY LAYER
+// GEOMETRY LAYER — with drag, rotation and measurements
 // ─────────────────────────────────────────────────────────────────────────────
-function GeometryLayer({ shapes, pageIndex, filterId }: {
+function shapeCentroid(sh: GeometryShape): { cx: number; cy: number } {
+  if (sh.type === "circle") return { cx: sh.x1, cy: sh.y1 };
+  if (sh.type === "line" && sh.x2 !== undefined && sh.y2 !== undefined)
+    return { cx: (sh.x1 + sh.x2) / 2, cy: (sh.y1 + sh.y2) / 2 };
+  if (sh.type === "rectangle" && sh.x2 !== undefined && sh.y2 !== undefined)
+    return { cx: (sh.x1 + sh.x2) / 2, cy: (sh.y1 + sh.y2) / 2 };
+  if (sh.type === "triangle" && sh.x2 !== undefined && sh.y2 !== undefined && sh.x3 !== undefined && sh.y3 !== undefined)
+    return { cx: (sh.x1 + sh.x2 + sh.x3) / 3, cy: (sh.y1 + sh.y2 + sh.y3) / 3 };
+  return { cx: sh.x1, cy: sh.y1 };
+}
+
+function lineLength(x1: number, y1: number, x2: number, y2: number, svgW = 100, svgH = 141.4): string {
+  // rough conversion: SVG units to cm assuming A4 at 21cm width
+  const dx = (x2 - x1) / svgW * 21;
+  const dy = (y2 - y1) / svgH * 29.7;
+  return `${Math.sqrt(dx * dx + dy * dy).toFixed(1)} cm`;
+}
+
+function angleDeg(x1: number, y1: number, x2: number, y2: number, x3: number, y3: number): string {
+  // angle at vertex (x2,y2)
+  const a1 = Math.atan2(y1 - y2, x1 - x2);
+  const a2 = Math.atan2(y3 - y2, x3 - x2);
+  let deg = Math.abs((a2 - a1) * 180 / Math.PI);
+  if (deg > 180) deg = 360 - deg;
+  return `${deg.toFixed(0)}°`;
+}
+
+function GeometryLayer({ shapes, pageIndex, filterId, editMode, onUpdateShape, selectedShapeId, onSelectShape }: {
   shapes: GeometryShape[]; pageIndex: number; filterId: string;
+  editMode?: boolean;
+  onUpdateShape?: (id: string, patch: Partial<GeometryShape>) => void;
+  selectedShapeId?: string | null;
+  onSelectShape?: (id: string | null) => void;
 }) {
   const ps = shapes.filter(s => s.pageIndex === pageIndex);
   if (!ps.length) return null;
+
+  const dragging = useRef<{ id: string; startSvgX: number; startSvgY: number; origX1: number; origY1: number; origX2?: number; origY2?: number; origX3?: number; origY3?: number; origRadius?: number } | null>(null);
+  const rotating = useRef<{ id: string; startAngle: number; origRotation: number; cx: number; cy: number } | null>(null);
+  const gRef = useRef<SVGGElement>(null);
+
+  // Get SVG coordinates from mouse event — find closest SVG ancestor
+  const toSvg = (e: MouseEvent | React.MouseEvent): { x: number; y: number } => {
+    const g = gRef.current;
+    const svg = g?.closest("svg") as SVGSVGElement | null;
+    if (!svg) return { x: 0, y: 0 };
+    const rect = svg.getBoundingClientRect();
+    return {
+      x: ((e.clientX - rect.left) / rect.width) * 100,
+      y: ((e.clientY - rect.top) / rect.height) * 141.4,
+    };
+  };
+
+  useEffect(() => {
+    if (!editMode) return;
+    const mv = (e: MouseEvent) => {
+      if (dragging.current && onUpdateShape) {
+        const { id, startSvgX, startSvgY, origX1, origY1, origX2, origY2, origX3, origY3 } = dragging.current;
+        const pos = toSvg(e);
+        const dx = pos.x - startSvgX;
+        const dy = pos.y - startSvgY;
+        onUpdateShape(id, {
+          x1: origX1 + dx, y1: origY1 + dy,
+          ...(origX2 !== undefined ? { x2: origX2 + dx } : {}),
+          ...(origY2 !== undefined ? { y2: origY2 + dy } : {}),
+          ...(origX3 !== undefined ? { x3: origX3 + dx } : {}),
+          ...(origY3 !== undefined ? { y3: origY3 + dy } : {}),
+        });
+      }
+      if (rotating.current && onUpdateShape) {
+        const { id, cx, cy, origRotation } = rotating.current;
+        const pos = toSvg(e);
+        const angle = Math.atan2(pos.y - cy, pos.x - cx) * 180 / Math.PI;
+        const delta = angle - rotating.current.startAngle;
+        onUpdateShape(id, { rotation: origRotation + delta });
+      }
+    };
+    const up = () => { dragging.current = null; rotating.current = null; };
+    window.addEventListener("mousemove", mv);
+    window.addEventListener("mouseup", up);
+    return () => { window.removeEventListener("mousemove", mv); window.removeEventListener("mouseup", up); };
+  }, [editMode, onUpdateShape]);
+
   return (
-    <>
+    <g ref={gRef}>
       {ps.map(sh => {
         const pencil = `url(#pencil-${filterId})`;
         const col = sh.strokeColor || "#2d2d3a";
         const sw  = sh.strokeWidth ?? 0.35;
         const n   = sh.pencilNoise ?? 0.4;
         const op  = 0.82 + n * 0.08;
+        const rot = sh.rotation ?? 0;
+        const { cx, cy } = shapeCentroid(sh);
+        const isSelected = selectedShapeId === sh.id;
+        const transform = rot !== 0 ? `rotate(${rot},${cx},${cy})` : undefined;
+        const selStyle = isSelected && editMode ? { cursor: "grab" } : {};
+
+        const onMouseDownDrag = editMode ? (e: React.MouseEvent) => {
+          e.stopPropagation();
+          onSelectShape?.(sh.id);
+          const pos = toSvg(e);
+          dragging.current = {
+            id: sh.id, startSvgX: pos.x, startSvgY: pos.y,
+            origX1: sh.x1, origY1: sh.y1,
+            origX2: sh.x2, origY2: sh.y2,
+            origX3: sh.x3, origY3: sh.y3,
+            origRadius: sh.radius,
+          };
+        } : undefined;
+
+        const onMouseDownRotate = editMode ? (e: React.MouseEvent) => {
+          e.stopPropagation();
+          const pos = toSvg(e);
+          const startAngle = Math.atan2(pos.y - cy, pos.x - cx) * 180 / Math.PI;
+          rotating.current = { id: sh.id, startAngle, origRotation: rot, cx, cy };
+        } : undefined;
+
         if (sh.type === "line" && sh.x2 !== undefined && sh.y2 !== undefined) {
           const mx = (sh.x1 + sh.x2) / 2 + (n - 0.5) * 0.4;
           const my = (sh.y1 + sh.y2) / 2 + (n - 0.5) * 0.4;
+          const len = lineLength(sh.x1, sh.y1, sh.x2, sh.y2);
+          // Compute angle in degrees (0-360)
+          const rawAngle = Math.atan2(sh.y2 - sh.y1, sh.x2 - sh.x1) * 180 / Math.PI;
+          const angDisplay = `${((rawAngle + 360) % 360).toFixed(0)}°`;
           return (
-            <g key={sh.id} style={{ filter: pencil }} opacity={op}>
-              <polyline points={`${sh.x1},${sh.y1} ${mx},${my} ${sh.x2},${sh.y2}`}
-                fill="none" stroke={col} strokeWidth={sw} strokeLinecap="round" />
-              {sh.label && <text x={mx} y={my - 1} fontSize="2" fill={col} textAnchor="middle" fontFamily="var(--font-homemade)">{sh.label}</text>}
+            <g key={sh.id} transform={transform} style={selStyle} onMouseDown={onMouseDownDrag}>
+              <g style={{ filter: pencil }} opacity={op}>
+                <polyline points={`${sh.x1},${sh.y1} ${mx},${my} ${sh.x2},${sh.y2}`}
+                  fill="none" stroke={col} strokeWidth={sw} strokeLinecap="round" />
+                {/* Length label */}
+                <text x={mx} y={my - 1.2} fontSize="2.2" fill={col} textAnchor="middle"
+                  fontFamily="var(--font-homemade)">{sh.label || len}</text>
+                {/* Angle label (shown when showMeasure) */}
+                {sh.showMeasure !== false && (
+                  <text x={mx} y={my + 3.5} fontSize="1.8" fill="#6b21a8" textAnchor="middle"
+                    fontFamily="var(--font-homemade)" opacity={0.85}>
+                    {angDisplay}
+                  </text>
+                )}
+                {/* Endpoints dots */}
+                <circle cx={sh.x1} cy={sh.y1} r="0.5" fill={col} opacity={0.6} />
+                <circle cx={sh.x2} cy={sh.y2} r="0.5" fill={col} opacity={0.6} />
+              </g>
+              {isSelected && editMode && (
+                <g>
+                  {/* Drag hit area */}
+                  <line x1={sh.x1} y1={sh.y1} x2={sh.x2} y2={sh.y2}
+                    stroke="transparent" strokeWidth="3" style={{ cursor: "grab" }} />
+                  {/* Rotate handle at end of segment */}
+                  <circle cx={sh.x2} cy={sh.y2} r="1.5"
+                    fill="#6366f1" stroke="white" strokeWidth="0.3"
+                    style={{ cursor: "crosshair" }}
+                    onMouseDown={onMouseDownRotate} />
+                  {/* Selection highlight */}
+                  <polyline points={`${sh.x1},${sh.y1} ${sh.x2},${sh.y2}`}
+                    fill="none" stroke="#6366f1" strokeWidth="0.4" strokeDasharray="1,0.5" opacity={0.6} />
+                </g>
+              )}
             </g>
           );
         }
@@ -498,32 +640,121 @@ function GeometryLayer({ shapes, pageIndex, filterId }: {
             const rr = sh.radius! + Math.sin(a * 7 + n * 10) * n * 0.3;
             return `${sh.x1 + Math.cos(a) * rr},${sh.y1 + Math.sin(a) * rr}`;
           }).join(" ");
+          const radiusCm = `r=${(sh.radius / 100 * 21).toFixed(1)}cm`;
           return (
-            <g key={sh.id} style={{ filter: pencil }} opacity={op}>
-              <polyline points={pts} fill="none" stroke={col} strokeWidth={sw} strokeLinecap="round" />
-              {sh.label && <text x={sh.x1} y={sh.y1 - sh.radius - 0.8} fontSize="2" fill={col} textAnchor="middle" fontFamily="var(--font-homemade)">{sh.label}</text>}
+            <g key={sh.id} transform={transform} style={selStyle} onMouseDown={onMouseDownDrag}>
+              <g style={{ filter: pencil }} opacity={op}>
+                <polyline points={pts} fill="none" stroke={col} strokeWidth={sw} strokeLinecap="round" />
+                <text x={sh.x1} y={sh.y1 - sh.radius - 0.8} fontSize="2.2" fill={col}
+                  textAnchor="middle" fontFamily="var(--font-homemade)">{sh.label || radiusCm}</text>
+              </g>
+              {isSelected && editMode && (
+                <g>
+                  <circle cx={sh.x1} cy={sh.y1} r={sh.radius}
+                    fill="transparent" stroke="#6366f1" strokeWidth="0.4" strokeDasharray="1,0.5" />
+                  {/* Rotate handle at top of circle */}
+                  <circle cx={sh.x1} cy={sh.y1 - sh.radius - 1.5} r="1.5"
+                    fill="#6366f1" stroke="white" strokeWidth="0.3"
+                    style={{ cursor: "crosshair" }}
+                    onMouseDown={onMouseDownRotate} />
+                </g>
+              )}
             </g>
           );
         }
         if (sh.type === "rectangle" && sh.x2 !== undefined && sh.y2 !== undefined) {
           const pts = [`${sh.x1},${sh.y1}`,`${sh.x2},${sh.y1}`,`${sh.x2},${sh.y2}`,`${sh.x1},${sh.y2}`,`${sh.x1},${sh.y1}`].join(" ");
+          const w = Math.abs(sh.x2 - sh.x1);
+          const h = Math.abs(sh.y2 - sh.y1);
+          const wCm = `${(w / 100 * 21).toFixed(1)}cm`;
+          const hCm = `${(h / 141.4 * 29.7).toFixed(1)}cm`;
           return (
-            <g key={sh.id} style={{ filter: pencil }} opacity={op}>
-              <polyline points={pts} fill="none" stroke={col} strokeWidth={sw} strokeLinecap="round" />
+            <g key={sh.id} transform={transform} style={selStyle} onMouseDown={onMouseDownDrag}>
+              <g style={{ filter: pencil }} opacity={op}>
+                <polyline points={pts} fill="none" stroke={col} strokeWidth={sw} strokeLinecap="round" />
+                {/* Width label */}
+                <text x={cx} y={sh.y1 - 0.8} fontSize="2" fill={col} textAnchor="middle"
+                  fontFamily="var(--font-homemade)">{wCm}</text>
+                {/* Height label */}
+                <text x={sh.x2 + 1} y={cy} fontSize="2" fill={col} textAnchor="start"
+                  fontFamily="var(--font-homemade)">{hCm}</text>
+              </g>
+              {isSelected && editMode && (
+                <g>
+                  <rect x={sh.x1} y={sh.y1} width={w} height={h}
+                    fill="transparent" stroke="#6366f1" strokeWidth="0.4" strokeDasharray="1,0.5" />
+                  {/* Rotate handle — top right corner */}
+                  <circle cx={sh.x2} cy={sh.y1 - 2} r="1.5"
+                    fill="#6366f1" stroke="white" strokeWidth="0.3"
+                    style={{ cursor: "crosshair" }}
+                    onMouseDown={onMouseDownRotate} />
+                  {/* Corner handles */}
+                  {[{x: sh.x1, y: sh.y1},{x: sh.x2, y: sh.y1},{x: sh.x2, y: sh.y2},{x: sh.x1, y: sh.y2}].map((pt, i) => (
+                    <rect key={i} x={pt.x - 1} y={pt.y - 1} width={2} height={2}
+                      fill="white" stroke="#6366f1" strokeWidth="0.3" rx="0.2" />
+                  ))}
+                </g>
+              )}
             </g>
           );
         }
         if (sh.type === "triangle" && sh.x2 !== undefined && sh.y2 !== undefined && sh.x3 !== undefined && sh.y3 !== undefined) {
+          // Compute angles at each vertex
+          const ang1 = angleDeg(sh.x2, sh.y2, sh.x1, sh.y1, sh.x3, sh.y3);
+          const ang2 = angleDeg(sh.x1, sh.y1, sh.x2, sh.y2, sh.x3, sh.y3);
+          const ang3 = angleDeg(sh.x1, sh.y1, sh.x3, sh.y3, sh.x2, sh.y2);
           return (
-            <g key={sh.id} style={{ filter: pencil }} opacity={op}>
-              <polygon points={`${sh.x1},${sh.y1} ${sh.x2},${sh.y2} ${sh.x3},${sh.y3}`}
-                fill="none" stroke={col} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
+            <g key={sh.id} transform={transform} style={selStyle} onMouseDown={onMouseDownDrag}>
+              <g style={{ filter: pencil }} opacity={op}>
+                <polygon points={`${sh.x1},${sh.y1} ${sh.x2},${sh.y2} ${sh.x3},${sh.y3}`}
+                  fill="none" stroke={col} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
+                {/* Side lengths */}
+                <text x={(sh.x1+sh.x2)/2} y={(sh.y1+sh.y2)/2 - 1} fontSize="1.8" fill={col}
+                  textAnchor="middle" fontFamily="var(--font-homemade)">
+                  {lineLength(sh.x1,sh.y1,sh.x2,sh.y2)}
+                </text>
+                <text x={(sh.x2+sh.x3)/2 + 1} y={(sh.y2+sh.y3)/2} fontSize="1.8" fill={col}
+                  textAnchor="start" fontFamily="var(--font-homemade)">
+                  {lineLength(sh.x2,sh.y2,sh.x3,sh.y3)}
+                </text>
+                <text x={(sh.x1+sh.x3)/2} y={(sh.y1+sh.y3)/2 + 2} fontSize="1.8" fill={col}
+                  textAnchor="middle" fontFamily="var(--font-homemade)">
+                  {lineLength(sh.x1,sh.y1,sh.x3,sh.y3)}
+                </text>
+                {/* Angle labels */}
+                {sh.showMeasure !== false && (
+                  <>
+                    <text x={sh.x1} y={sh.y1 - 1.2} fontSize="1.6" fill="#6b21a8"
+                      textAnchor="middle" fontFamily="var(--font-homemade)">{ang1}</text>
+                    <text x={sh.x2 - 2} y={sh.y2 + 2} fontSize="1.6" fill="#6b21a8"
+                      textAnchor="middle" fontFamily="var(--font-homemade)">{ang2}</text>
+                    <text x={sh.x3 + 2} y={sh.y3 + 2} fontSize="1.6" fill="#6b21a8"
+                      textAnchor="middle" fontFamily="var(--font-homemade)">{ang3}</text>
+                  </>
+                )}
+              </g>
+              {isSelected && editMode && (
+                <g>
+                  <polygon points={`${sh.x1},${sh.y1} ${sh.x2},${sh.y2} ${sh.x3},${sh.y3}`}
+                    fill="transparent" stroke="#6366f1" strokeWidth="0.4" strokeDasharray="1,0.5" />
+                  {/* Rotate handle */}
+                  <circle cx={cx} cy={cy - 5} r="1.5"
+                    fill="#6366f1" stroke="white" strokeWidth="0.3"
+                    style={{ cursor: "crosshair" }}
+                    onMouseDown={onMouseDownRotate} />
+                  {/* Vertex handles */}
+                  {[{x: sh.x1, y: sh.y1},{x: sh.x2, y: sh.y2},{x: sh.x3, y: sh.y3}].map((pt, i) => (
+                    <circle key={i} cx={pt.x} cy={pt.y} r="1.3"
+                      fill="white" stroke="#6366f1" strokeWidth="0.3" />
+                  ))}
+                </g>
+              )}
             </g>
           );
         }
         return null;
       })}
-    </>
+    </g>
   );
 }
 
@@ -677,7 +908,8 @@ function DraggableAnswer({ question, answer, profile, variantSeed, editMode, off
 // ─────────────────────────────────────────────────────────────────────────────
 function PageLayer({ page, pi, questions, answers, profile, variantSeed,
   editMode, offsets, onOffsetChange, effects, shapes, comments,
-  onCommentDrag, forPrint, artImageOverride, studentName }: {
+  onCommentDrag, forPrint, artImageOverride, studentName,
+  onUpdateShape, selectedShapeId, onSelectShape }: {
   page: EvalPage; pi: number;
   questions: DetectedQuestion[]; answers: Record<string, string>;
   profile: StudentProfile; variantSeed: number;
@@ -689,6 +921,9 @@ function PageLayer({ page, pi, questions, answers, profile, variantSeed,
   forPrint?: boolean;
   artImageOverride?: string;
   studentName?: string;
+  onUpdateShape?: (id: string, patch: Partial<GeometryShape>) => void;
+  selectedShapeId?: string | null;
+  onSelectShape?: (id: string | null) => void;
 }) {
   const filterId = `p${pi}`;
   const pageQ    = questions.filter(q => q.pageIndex === pi);
@@ -713,7 +948,15 @@ function PageLayer({ page, pi, questions, answers, profile, variantSeed,
         pointerEvents: (editMode && !forPrint) ? "auto" : "none" }}
         viewBox="0 0 100 141.4" preserveAspectRatio="none">
         <PencilDefs id={filterId} />
-        {effects.showGeometry && <GeometryLayer shapes={shapes} pageIndex={pi} filterId={filterId} />}
+        {effects.showGeometry && (
+        <GeometryLayer
+          shapes={shapes} pageIndex={pi} filterId={filterId}
+          editMode={editMode && !forPrint}
+          onUpdateShape={onUpdateShape}
+          selectedShapeId={selectedShapeId}
+          onSelectShape={onSelectShape}
+        />
+      )}
         <PageRealism pi={pi} pageQ={pageQ} answers={answers} profile={profile}
           variantSeed={variantSeed} effects={effects} filterId={filterId} />
         {effects.showComments && (
@@ -1135,6 +1378,11 @@ export default function App() {
   const [shapes, setShapes]             = useState<GeometryShape[]>([]);
   const [artImages, setArtImages]       = useState<Record<number, string>>({});
   const [sidePanel, setSidePanel]       = useState<"position" | "effects" | "comments" | "geometry" | "art">("position");
+  const [selectedShapeId, setSelectedShapeId] = useState<string | null>(null);
+
+  const handleUpdateShape = useCallback((id: string, patch: Partial<GeometryShape>) => {
+    setShapes(prev => prev.map(s => s.id === id ? { ...s, ...patch } : s));
+  }, []);
 
   const currentBatch       = batchMode ? batchStudents[activeBatchIdx] ?? null : null;
   const activeAnswers      = batchMode ? (currentBatch?.answers ?? {}) : answers;
@@ -1322,7 +1570,7 @@ export default function App() {
     setIsDetecting(false);
   };
 
-  const generateAnswers = async () => {
+  const generateAnswers = async (fromPreview = false) => {
     if (!questions.length) return;
     setIsGenerating(true); setGenErr("");
     try {
@@ -1345,7 +1593,10 @@ export default function App() {
         const firstPage = questions.filter(q => d.answers[q.id]).reduce((min, q) => Math.min(min, q.pageIndex), 0);
         setPreviewPage(firstPage);
         setGenErr("");
+        // Always go to preview; if already there just stay
         setStep("preview");
+        // Switch sidebar to "Réponses" panel to show filled answers
+        setSidePanel("position");
       } else {
         setGenErr(d.error || "Erreur lors de la génération des réponses.");
       }
@@ -2240,6 +2491,9 @@ ${nameOv}${buildAnswers(pi)}</div>`;
                       onCommentDrag={handleCommentDrag}
                       artImageOverride={artImages[previewPage]}
                       studentName={activeDisplayProfile.name}
+                      onUpdateShape={handleUpdateShape}
+                      selectedShapeId={selectedShapeId}
+                      onSelectShape={setSelectedShapeId}
                     />
                   </div>
 
@@ -2347,19 +2601,79 @@ ${nameOv}${buildAnswers(pi)}</div>`;
                             <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wide flex items-center gap-1">
                               <PenTool className="h-3 w-3" /> Formes géométriques
                             </p>
-                            <GeometryBuilder pageIndex={previewPage} onAdd={s => setShapes(prev => [...prev, s])} />
+                            <GeometryBuilder pageIndex={previewPage} onAdd={s => { setShapes(prev => [...prev, s]); setSelectedShapeId(s.id); }} />
                             {shapes.filter(s => s.pageIndex === previewPage).length > 0 && (
-                              <div className="pt-2 border-t border-slate-100 space-y-1">
-                                {shapes.filter(s => s.pageIndex === previewPage).map(s => (
-                                  <div key={s.id} className="flex items-center gap-1.5 p-1.5 bg-slate-50 rounded-lg border border-slate-100">
-                                    <span className="text-[9px] font-semibold text-slate-600 flex-1 capitalize">{s.type} {s.label || ""}</span>
-                                    <button onClick={() => setShapes(prev => prev.filter(sh => sh.id !== s.id))}
-                                      className="p-0.5 rounded hover:bg-red-50 transition">
-                                      <Trash2 className="h-3 w-3 text-red-400" />
-                                    </button>
-                                  </div>
-                                ))}
+                              <div className="pt-2 border-t border-slate-100 space-y-1.5">
+                                <p className="text-[9px] font-bold text-indigo-500 uppercase tracking-wide flex items-center gap-1">
+                                  ★ Cliquer une forme pour la sélectionner (déplacer + rotation)
+                                </p>
+                                {shapes.filter(s => s.pageIndex === previewPage).map(s => {
+                                  const isSel = selectedShapeId === s.id;
+                                  const rot = s.rotation ?? 0;
+                                  return (
+                                    <div key={s.id}
+                                      className={`p-2 rounded-lg border transition cursor-pointer ${
+                                        isSel ? "border-indigo-400 bg-indigo-50" : "border-slate-100 bg-slate-50 hover:border-slate-300"
+                                      }`}
+                                      onClick={() => setSelectedShapeId(isSel ? null : s.id)}>
+                                      <div className="flex items-center gap-1.5">
+                                        <span className="text-[9px] font-bold text-slate-600 flex-1 capitalize">
+                                          {s.type === "line" ? "📏" : s.type === "circle" ? "⭕" : s.type === "rectangle" ? "▭" : "△"}&nbsp;
+                                          {s.type}
+                                        </span>
+                                        <button onClick={e => { e.stopPropagation(); setShapes(prev => prev.filter(sh => sh.id !== s.id)); if (selectedShapeId === s.id) setSelectedShapeId(null); }}
+                                          className="p-0.5 rounded hover:bg-red-50 transition">
+                                          <Trash2 className="h-3 w-3 text-red-400" />
+                                        </button>
+                                      </div>
+                                      {isSel && (
+                                        <div className="mt-2 space-y-2">
+                                          {/* Label */}
+                                          <div className="flex items-center gap-1.5">
+                                            <span className="text-[9px] text-slate-500 w-12 shrink-0">Label</span>
+                                            <input value={s.label || ""}
+                                              onChange={e => handleUpdateShape(s.id, { label: e.target.value })}
+                                              className="flex-1 border border-slate-200 rounded px-1.5 py-0.5 text-[9px] focus:outline-none focus:border-indigo-400"
+                                              placeholder="ex: 6 cm" />
+                                          </div>
+                                          {/* Rotation */}
+                                          <div className="flex items-center gap-1.5">
+                                            <span className="text-[9px] text-slate-500 w-12 shrink-0">Rotation</span>
+                                            <input type="range" min={-180} max={180} step={1} value={rot}
+                                              onChange={e => handleUpdateShape(s.id, { rotation: parseFloat(e.target.value) })}
+                                              className="flex-1 accent-indigo-500 h-1.5" />
+                                            <span className="text-[9px] font-bold text-indigo-600 w-10 text-right">{rot.toFixed(0)}°</span>
+                                          </div>
+                                          {/* Reset rotation */}
+                                          <button onClick={() => handleUpdateShape(s.id, { rotation: 0 })}
+                                            className="w-full py-1 border border-slate-200 rounded text-[9px] font-semibold text-slate-500 hover:bg-slate-100 transition">
+                                            ↺ Réinitialiser rotation
+                                          </button>
+                                          {/* Measure toggle for triangle and line */}
+                                          {(s.type === "triangle" || s.type === "line") && (
+                                            <button onClick={() => handleUpdateShape(s.id, { showMeasure: !(s.showMeasure !== false) })}
+                                              className={`w-full py-1 border rounded text-[9px] font-semibold transition ${
+                                                s.showMeasure !== false
+                                                  ? "bg-indigo-500 text-white border-indigo-500"
+                                                  : "border-slate-200 text-slate-500 hover:bg-slate-50"
+                                              }`}>
+                                              📏 {s.showMeasure !== false ? "Mesures ON" : "Mesures OFF"}
+                                            </button>
+                                          )}
+                                          {/* Position info */}
+                                          <div className="text-[8px] text-slate-400 font-medium">
+                                            x:{s.x1.toFixed(1)} y:{s.y1.toFixed(1)}
+                                            {s.x2 !== undefined && ` → x2:${s.x2.toFixed(1)} y2:${(s.y2??0).toFixed(1)}`}
+                                          </div>
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
                               </div>
+                            )}
+                            {shapes.filter(s => s.pageIndex === previewPage).length === 0 && (
+                              <p className="text-[9px] text-slate-300 text-center py-2">Aucune forme sur cette page</p>
                             )}
                           </div>
                         )}
@@ -2401,15 +2715,50 @@ ${nameOv}${buildAnswers(pi)}</div>`;
                       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
                         <div className="px-3 py-2 border-b border-slate-100 flex items-center gap-1.5">
                           <Edit3 className="h-3 w-3 text-indigo-500" />
-                          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">Réponses — Page {previewPage + 1}</p>
+                          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wide flex-1">Réponses — Page {previewPage + 1}</p>
+                          {/* Quick re-generate button */}
+                          {questions.length > 0 && (
+                            <button
+                              onClick={() => generateAnswers(true)}
+                              disabled={isGenerating}
+                              title="Générer / Regénérer les réponses avec Gemini"
+                              className="flex items-center gap-1 px-2 py-1 bg-indigo-500 text-white rounded-lg text-[9px] font-bold hover:bg-indigo-600 transition disabled:opacity-50">
+                              {isGenerating
+                                ? <RefreshCw className="h-2.5 w-2.5 animate-spin" />
+                                : <Sparkles className="h-2.5 w-2.5" />}
+                              {isGenerating ? "…" : "Générer"}
+                            </button>
+                          )}
                         </div>
-                        <div className="p-3 space-y-2 max-h-52 overflow-y-auto">
+                        {/* Always show textareas for all questions on this page */}
+                        <div className="p-3 space-y-2 max-h-64 overflow-y-auto">
+                          {/* Show generate CTA if no answers yet */}
+                          {!batchMode && Object.keys(answers).filter(k => answers[k]).length === 0 && !isGenerating && (
+                            <div className="p-3 bg-indigo-50 border border-indigo-100 rounded-xl text-center space-y-2 mb-2">
+                              <Sparkles className="h-6 w-6 text-indigo-300 mx-auto" />
+                              <p className="text-[10px] font-bold text-indigo-700">Aucune réponse générée</p>
+                              <button onClick={() => generateAnswers(true)} disabled={isGenerating}
+                                className="w-full py-2 bg-indigo-500 text-white rounded-lg font-bold text-xs flex items-center justify-center gap-1.5 disabled:opacity-50 hover:bg-indigo-600 transition">
+                                <Sparkles className="h-3 w-3" /> Générer avec Gemini
+                              </button>
+                            </div>
+                          )}
+                          {isGenerating && (
+                            <div className="p-3 bg-indigo-50 border border-indigo-100 rounded-xl text-center space-y-1 mb-2">
+                              <RefreshCw className="h-5 w-5 text-indigo-400 mx-auto animate-spin" />
+                              <p className="text-[10px] font-bold text-indigo-600">Gemini génère les réponses…</p>
+                            </div>
+                          )}
                           {questions.filter(q => q.pageIndex === previewPage).map(q => {
                             const val = batchMode && currentBatch ? (currentBatch.answers[q.id] ?? "") : (answers[q.id] ?? "");
                             return (
-                              <div key={q.id} className="space-y-1">
-                                <label className="text-[9px] font-bold text-slate-400 block truncate" title={q.text}>
-                                  {q.id} — {q.text.substring(0, 40)}{q.text.length > 40 ? "…" : ""}
+                              <div key={q.id} className={`space-y-1 p-1.5 rounded-lg border ${
+                                val ? "border-emerald-200 bg-emerald-50/40" : "border-slate-100 bg-slate-50"
+                              }`}>
+                                <label className="text-[9px] font-bold block truncate" title={q.text}>
+                                  <span className={val ? "text-emerald-600" : "text-slate-400"}>
+                                    {val ? "✅" : "⏳"} {q.id} — {q.text.substring(0, 35)}{q.text.length > 35 ? "…" : ""}
+                                  </span>
                                 </label>
                                 <div className="flex gap-1 items-start">
                                   <textarea
@@ -2424,30 +2773,49 @@ ${nameOv}${buildAnswers(pi)}</div>`;
                                         setAnswers(prev => ({ ...prev, [q.id]: v }));
                                       }
                                     }}
-                                    rows={2}
-                                    className="flex-1 border border-slate-200 rounded-lg p-1.5 text-[10px] focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-transparent resize-none bg-slate-50 font-medium"
-                                    placeholder="Réponse…"
+                                    rows={val ? 3 : 2}
+                                    className={`flex-1 border rounded-lg p-1.5 text-[10px] focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-transparent resize-none font-medium transition ${
+                                      val ? "border-emerald-200 bg-white" : "border-slate-200 bg-slate-50"
+                                    }`}
+                                    placeholder={isGenerating ? "Génération en cours…" : "Réponse IA (cliquer Générer) ou taper manuellement"}
                                   />
-                                  <button
-                                    title="Recentrer sur la page"
-                                    onClick={() => {
-                                      if (batchMode && currentBatch) {
-                                        setBatchStudents(prev => prev.map(b =>
-                                          b.id === currentBatch.id ? { ...b, offsets: { ...b.offsets, [q.id]: { x: 0, y: 0 } } } : b
-                                        ));
-                                      } else {
-                                        setOffsets(prev => ({ ...prev, [q.id]: { x: 0, y: 0 } }));
-                                      }
-                                    }}
-                                    className="mt-0.5 px-1.5 py-1 bg-indigo-500 text-white rounded-lg text-[9px] font-bold hover:bg-indigo-600 transition shrink-0"
-                                  >○</button>
+                                  <div className="flex flex-col gap-0.5 mt-0.5">
+                                    <button
+                                      title="Recentrer sur la page"
+                                      onClick={() => {
+                                        if (batchMode && currentBatch) {
+                                          setBatchStudents(prev => prev.map(b =>
+                                            b.id === currentBatch.id ? { ...b, offsets: { ...b.offsets, [q.id]: { x: 0, y: 0 } } } : b
+                                          ));
+                                        } else {
+                                          setOffsets(prev => ({ ...prev, [q.id]: { x: 0, y: 0 } }));
+                                        }
+                                      }}
+                                      className="px-1.5 py-1 bg-indigo-500 text-white rounded-lg text-[9px] font-bold hover:bg-indigo-600 transition shrink-0"
+                                    >○</button>
+                                    {val && (
+                                      <button
+                                        title="Effacer cette réponse"
+                                        onClick={() => {
+                                          if (batchMode && currentBatch) {
+                                            setBatchStudents(prev => prev.map(b =>
+                                              b.id === currentBatch.id ? { ...b, answers: { ...b.answers, [q.id]: "" } } : b
+                                            ));
+                                          } else {
+                                            setAnswers(prev => ({ ...prev, [q.id]: "" }));
+                                          }
+                                        }}
+                                        className="px-1.5 py-1 bg-red-50 border border-red-200 text-red-400 rounded-lg text-[9px] hover:bg-red-100 transition shrink-0"
+                                      >✕</button>
+                                    )}
+                                  </div>
                                 </div>
                               </div>
                             );
                           })}
                         </div>
                         <div className="px-3 py-1.5 border-t border-slate-100">
-                          <p className="text-[8px] text-slate-300 font-medium">Édition temps réel · ○ recentre · Glisser avec "Déplacer"</p>
+                          <p className="text-[8px] text-slate-300 font-medium">Édition temps réel · ○ recentre · Essai avec "Déplacer"</p>
                         </div>
                       </div>
                     )}
