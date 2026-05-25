@@ -66,6 +66,13 @@ interface BatchStudent {
   offsets: Record<string, { x: number; y: number }>;
   isGenerating: boolean;
   isDone: boolean;
+  // Per-student overlays (independent for each student)
+  teacherNote: TeacherNote | null;
+  gradeMarks: GradeMark[];
+  artImages: Record<number, string>;
+  artTransforms: Record<number, ArtTransform>;
+  namePos: { x: number; y: number };
+  effects: PageEffectOverrides;
 }
 
 // Grade mark draggable overlay (✓ / ✗ / note / date)
@@ -236,6 +243,13 @@ function makeBatchStudent(profile: StudentProfile, level: CriteriaLevel): BatchS
     profile, criteriaLevel: level,
     answers: {}, comments: [], offsets: {},
     isGenerating: false, isDone: false,
+    // Per-student overlays — each student has their own
+    teacherNote: null,
+    gradeMarks: [],
+    artImages: {},
+    artTransforms: {},
+    namePos: { x: 55, y: 4 },
+    effects: defaultEffects(),
   };
 }
 
@@ -2266,23 +2280,42 @@ export default function App() {
     const defaults: Record<GradeMark["type"], string> = {
       check: "✓", cross: "✗", grade: "6/8", date: new Date().toLocaleDateString("fr-FR"), custom: "?",
     };
-    setGradeMarks(prev => [...prev, {
+    const newMark: GradeMark = {
       id: `gm_${Date.now()}`,
       pageIndex, type,
       text: defaults[type],
       x: 45, y: 45,
       fontSize: type === "grade" ? 3.5 : 2.8,
       color: "#dc2626",
-    }]);
-  }, []);
+    };
+    if (batchMode && currentBatch) {
+      setBatchStudents(prev => prev.map(b => b.id === currentBatch.id
+        ? { ...b, gradeMarks: [...b.gradeMarks, newMark] }
+        : b));
+    } else {
+      setGradeMarks(prev => [...prev, newMark]);
+    }
+  }, [batchMode, currentBatch]);
 
   const updateGradeMark = useCallback((id: string, patch: Partial<GradeMark>) => {
-    setGradeMarks(prev => prev.map(m => m.id === id ? { ...m, ...patch } : m));
-  }, []);
+    if (batchMode && currentBatch) {
+      setBatchStudents(prev => prev.map(b => b.id === currentBatch.id
+        ? { ...b, gradeMarks: b.gradeMarks.map(m => m.id === id ? { ...m, ...patch } : m) }
+        : b));
+    } else {
+      setGradeMarks(prev => prev.map(m => m.id === id ? { ...m, ...patch } : m));
+    }
+  }, [batchMode, currentBatch]);
 
   const deleteGradeMark = useCallback((id: string) => {
-    setGradeMarks(prev => prev.filter(m => m.id !== id));
-  }, []);
+    if (batchMode && currentBatch) {
+      setBatchStudents(prev => prev.map(b => b.id === currentBatch.id
+        ? { ...b, gradeMarks: b.gradeMarks.filter(m => m.id !== id) }
+        : b));
+    } else {
+      setGradeMarks(prev => prev.filter(m => m.id !== id));
+    }
+  }, [batchMode, currentBatch]);
 
   const currentBatch       = batchMode ? batchStudents[activeBatchIdx] ?? null : null;
   const activeAnswers      = batchMode ? (currentBatch?.answers ?? {}) : answers;
@@ -2290,6 +2323,74 @@ export default function App() {
   const activeOffsets      = batchMode ? (currentBatch?.offsets  ?? {}) : offsets;
   const activeVarSeed      = batchMode ? (activeBatchIdx + 1) * 3 : variantSeed;
   const activeDisplayProfile = batchMode ? (currentBatch?.profile ?? activeProfile) : activeProfile;
+  // Per-student state isolation: route to currentBatch in batch mode, global state otherwise
+  const activeTeacherNote   = batchMode ? (currentBatch?.teacherNote   ?? null)              : teacherNote;
+  const activeGradeMarks    = batchMode ? (currentBatch?.gradeMarks    ?? [])                : gradeMarks;
+  const activeArtImages     = batchMode ? (currentBatch?.artImages     ?? {})                : artImages;
+  const activeArtTransforms = batchMode ? (currentBatch?.artTransforms ?? {})                : artTransforms;
+  const activeNamePos       = batchMode ? (currentBatch?.namePos       ?? { x: 55, y: 4 })  : namePos;
+  const activeEffects       = batchMode ? (currentBatch?.effects       ?? defaultEffects())  : effects;
+
+  // ── Batch-aware setters ────────────────────────────────────────────────────
+  const setActiveTeacherNote = useCallback((updater: TeacherNote | null | ((prev: TeacherNote | null) => TeacherNote | null)) => {
+    if (batchMode && currentBatch) {
+      setBatchStudents(prev => prev.map(b => b.id === currentBatch.id
+        ? { ...b, teacherNote: typeof updater === "function" ? updater(b.teacherNote) : updater }
+        : b));
+    } else {
+      setTeacherNote(updater as any);
+    }
+  }, [batchMode, currentBatch]);
+
+  const setActiveGradeMarks = useCallback((updater: GradeMark[] | ((prev: GradeMark[]) => GradeMark[])) => {
+    if (batchMode && currentBatch) {
+      setBatchStudents(prev => prev.map(b => b.id === currentBatch.id
+        ? { ...b, gradeMarks: typeof updater === "function" ? updater(b.gradeMarks) : updater }
+        : b));
+    } else {
+      setGradeMarks(updater as any);
+    }
+  }, [batchMode, currentBatch]);
+
+  const setActiveArtImages = useCallback((updater: Record<number, string> | ((prev: Record<number, string>) => Record<number, string>)) => {
+    if (batchMode && currentBatch) {
+      setBatchStudents(prev => prev.map(b => b.id === currentBatch.id
+        ? { ...b, artImages: typeof updater === "function" ? updater(b.artImages) : updater }
+        : b));
+    } else {
+      setArtImages(updater as any);
+    }
+  }, [batchMode, currentBatch]);
+
+  const setActiveArtTransforms = useCallback((updater: Record<number, ArtTransform> | ((prev: Record<number, ArtTransform>) => Record<number, ArtTransform>)) => {
+    if (batchMode && currentBatch) {
+      setBatchStudents(prev => prev.map(b => b.id === currentBatch.id
+        ? { ...b, artTransforms: typeof updater === "function" ? updater(b.artTransforms) : updater }
+        : b));
+    } else {
+      setArtTransforms(updater as any);
+    }
+  }, [batchMode, currentBatch]);
+
+  const setActiveNamePos = useCallback((updater: { x: number; y: number } | ((prev: { x: number; y: number }) => { x: number; y: number })) => {
+    if (batchMode && currentBatch) {
+      setBatchStudents(prev => prev.map(b => b.id === currentBatch.id
+        ? { ...b, namePos: typeof updater === "function" ? updater(b.namePos) : updater }
+        : b));
+    } else {
+      setNamePos(updater as any);
+    }
+  }, [batchMode, currentBatch]);
+
+  const setActiveEffects = useCallback((updater: PageEffectOverrides | ((prev: PageEffectOverrides) => PageEffectOverrides)) => {
+    if (batchMode && currentBatch) {
+      setBatchStudents(prev => prev.map(b => b.id === currentBatch.id
+        ? { ...b, effects: typeof updater === "function" ? updater(b.effects) : updater }
+        : b));
+    } else {
+      setEffects(updater as any);
+    }
+  }, [batchMode, currentBatch]);
 
   // ── On startup: clear bloated localStorage (old versions stored full base64 images) ──
   useEffect(() => {
@@ -2839,7 +2940,7 @@ export default function App() {
         } else {
           setComments(nc);
         }
-        setEffects(prev => ({ ...prev, showComments: true }));
+        setActiveEffects(prev => ({ ...prev, showComments: true }));
       }
     } catch (err) { console.error(err); }
     setIsGenComments(false);
@@ -2849,23 +2950,38 @@ export default function App() {
   const generateTeacherNote = async () => {
     setIsGenNote(true); setGenNoteErr("");
     try {
-      // Build a summary prompt and use the comments API or generate-answers with a special question
-      const summaryQ = [{ id: "teacher_note", text: `Rédige un commentaire d'enseignant en 2-3 phrases expliquant pourquoi l'élève ${activeDisplayProfile.name} mérite le niveau ${criteriaLevel}/8 d'après ses réponses. Sois précis, bienveillant et pédagogique. Texte brut uniquement, sans markdown.` }];
+      // Build a rich context-aware prompt using actual student answers + grading grid (page 1)
+      const answersSummary = Object.entries(activeAnswers)
+        .map(([qId, ans]) => {
+          const q = questions.find(x => x.id === qId);
+          return q ? `Q: ${q.text}\nRéponse: ${ans}` : `Q(${qId}): ${ans}`;
+        })
+        .join("\n\n");
+
+      const promptText = `Tu es un enseignant bienveillant et précis. Rédige un commentaire d'évaluation en 2-3 phrases pour l'élève "${activeDisplayProfile.name}" qui a obtenu le niveau ${criteriaLevel}/8.
+
+${answersSummary ? `Voici les réponses de l'élève :\n${answersSummary}\n\n` : ""}Appuie-toi sur la grille de notation visible dans l'image (page 1) pour justifier ce niveau. Sois pédagogique, bienveillant et précis. Texte brut uniquement, sans markdown ni puces.`;
+
+      const summaryQ = [{ id: "teacher_note", text: promptText }];
+
+      // Include page 1 (grading grid) as image context if available
+      const page1Base64 = evalPages.length > 0 ? evalPages[0].base64 : "";
+
       const r = await fetch("/api/generate-answers", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           questions: summaryQ,
           criteriaLevel,
-          studentName: "Enseignant",
+          studentName: activeDisplayProfile.name,
           variantSeed: Date.now() % 1000,
-          pdfPagesBase64: [],
+          pdfPagesBase64: page1Base64 ? [page1Base64] : [],
           saveSession: false,
         }),
       });
       const d = await r.json();
       const noteText = d?.answers?.teacher_note || d?.answers?.[Object.keys(d?.answers ?? {})[0]] || "";
       if (noteText) {
-        setTeacherNote({
+        setActiveTeacherNote({
           text: noteText,
           x: 5, y: 88,
           color: DEFAULT_TEACHER_COLOR,
@@ -2920,22 +3036,22 @@ export default function App() {
     pComments: TeacherComment[],
   ) => {
     const pages = evalPages.length > 0 ? evalPages : [{ base64: "", pageNum: 1 }];
-    const html = buildPrintHTML(pages, questions, pAnswers, pOffsets, pProfile, pComments, effects, pProfile.name, artImages, teacherNote, namePos, gradeMarks, artTransforms);
+    const html = buildPrintHTML(pages, questions, pAnswers, pOffsets, pProfile, pComments, activeEffects, pProfile.name, activeArtImages, activeTeacherNote, activeNamePos, activeGradeMarks, activeArtTransforms);
     const w = window.open("", "_blank", "width=900,height=700");
     if (!w) { alert("Autorisez les pop-ups pour imprimer."); return; }
     w.document.open(); w.document.write(html); w.document.close();
-  }, [evalPages, questions, effects, artImages, teacherNote, namePos, gradeMarks, artTransforms]);
+  }, [evalPages, questions, activeEffects, activeArtImages, activeTeacherNote, activeNamePos, activeGradeMarks, activeArtTransforms]);
 
   const printAllBatch = useCallback(() => {
     const pages = evalPages.length > 0 ? evalPages : [{ base64: "", pageNum: 1 }];
-    // Reuse buildPrintHTML for each student — includes grade marks + art transforms
+    // Reuse buildPrintHTML for each student — each with their own per-student overlays
     const allHTML = batchStudents.filter(b => b.isDone).map(bs => {
       // Extract inner body HTML from buildPrintHTML (strip full html wrapper)
       const fullHtml = buildPrintHTML(
         pages, questions, bs.answers, bs.offsets, bs.profile,
-        bs.comments, effects, bs.profile.name,
-        artImages, teacherNote, namePos,
-        gradeMarks, artTransforms,
+        bs.comments, bs.effects, bs.profile.name,
+        bs.artImages, bs.teacherNote, bs.namePos,
+        bs.gradeMarks, bs.artTransforms,
       );
       // Extract just the <body> contents
       const bodyMatch = fullHtml.match(/<body>([\s\S]*?)<script>/);
@@ -2952,7 +3068,7 @@ export default function App() {
     const w = window.open("", "_blank", "width=900,height=700");
     if (!w) { alert("Autorisez les pop-ups."); return; }
     w.document.open(); w.document.write(html); w.document.close();
-  }, [batchStudents, evalPages, questions, effects, artImages, teacherNote, namePos, gradeMarks, artTransforms]);
+  }, [batchStudents, evalPages, questions]);
 
   const displayPages = evalPages.length > 0 ? evalPages : [{ base64: "", pageNum: 1 }];
   const upd = <K extends keyof StudentProfile>(k: K, v: StudentProfile[K]) =>
@@ -3989,28 +4105,28 @@ export default function App() {
                       profile={activeDisplayProfile} variantSeed={activeVarSeed}
                       editMode={editMode} offsets={activeOffsets}
                       onOffsetChange={handleOffsetChange}
-                      effects={effects} shapes={shapes}
+                      effects={activeEffects} shapes={shapes}
                       comments={activeComments}
                       onCommentDrag={handleCommentDrag}
-                      artImageOverride={artImages[previewPage]}
+                      artImageOverride={activeArtImages[previewPage]}
                       studentName={activeDisplayProfile.name}
                       onUpdateShape={handleUpdateShape}
                       selectedShapeId={selectedShapeId}
                       onSelectShape={setSelectedShapeId}
                       showName={showName}
-                      namePosX={namePos.x} namePosY={namePos.y}
-                      onNameMove={(dx, dy) => setNamePos(p => ({ x: Math.max(0, Math.min(90, p.x + dx)), y: Math.max(0, Math.min(90, p.y + dy)) }))}
-                      teacherNote={teacherNote}
-                      onTeacherNoteMove={(dx, dy) => setTeacherNote(n => n ? { ...n, x: Math.max(0, Math.min(90, n.x + dx)), y: Math.max(0, Math.min(90, n.y + dy)) } : n)}
-                      gradeMarks={gradeMarks}
+                      namePosX={activeNamePos.x} namePosY={activeNamePos.y}
+                      onNameMove={(dx, dy) => setActiveNamePos(p => ({ x: Math.max(0, Math.min(90, p.x + dx)), y: Math.max(0, Math.min(90, p.y + dy)) }))}
+                      teacherNote={activeTeacherNote}
+                      onTeacherNoteMove={(dx, dy) => setActiveTeacherNote(n => n ? { ...n, x: Math.max(0, Math.min(90, n.x + dx)), y: Math.max(0, Math.min(90, n.y + dy)) } : n)}
+                      gradeMarks={activeGradeMarks}
                       onGradeMarkMove={(id, dx, dy) => updateGradeMark(id, {
-                        x: Math.max(0, Math.min(95, (gradeMarks.find(m => m.id === id)?.x ?? 0) + dx)),
-                        y: Math.max(0, Math.min(95, (gradeMarks.find(m => m.id === id)?.y ?? 0) + dy)),
+                        x: Math.max(0, Math.min(95, (activeGradeMarks.find(m => m.id === id)?.x ?? 0) + dx)),
+                        y: Math.max(0, Math.min(95, (activeGradeMarks.find(m => m.id === id)?.y ?? 0) + dy)),
                       })}
                       selectedGradeMarkId={selectedGradeMarkId}
                       onSelectGradeMark={setSelectedGradeMarkId}
-                      artTransform={artTransforms[previewPage]}
-                      onArtUpdate={patch => setArtTransforms(prev => ({
+                      artTransform={activeArtTransforms[previewPage]}
+                      onArtUpdate={patch => setActiveArtTransforms(prev => ({
                         ...prev,
                         [previewPage]: { ...(prev[previewPage] ?? { x: 0, y: 0, w: 100, h: 100, cropX: 0, cropY: 0, cropW: 100, cropH: 100, rotation: 0 }), ...patch },
                       }))}
@@ -4094,8 +4210,8 @@ export default function App() {
                         {sidePanel === "effects" && (
                           <div className="space-y-2">
                             <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wide">Effets visibles</p>
-                            <EffectToggles effects={effects} onChange={(k, v) => setEffects(prev => ({ ...prev, [k]: v }))} />
-                            <button onClick={() => setEffects(defaultEffects())}
+                            <EffectToggles effects={activeEffects} onChange={(k, v) => setActiveEffects(prev => ({ ...prev, [k]: v }))} />
+                            <button onClick={() => setActiveEffects(defaultEffects())}
                               className="w-full py-1.5 border border-slate-200 rounded-lg text-[10px] font-semibold text-slate-500 hover:bg-slate-50 transition mt-1">
                               Tout activer
                             </button>
@@ -4111,32 +4227,60 @@ export default function App() {
                                 🏅 Commentaire d'évaluation (page 1)
                               </p>
                               <p className="text-[8px] text-amber-600">Gemini explique pourquoi l'élève mérite sa note. Affiché en bas de la 1ère page, déplaçable librement.</p>
-                              {teacherNote ? (
+                              {activeTeacherNote ? (
                                 <div className="space-y-1.5">
                                   <textarea
-                                    value={teacherNote.text}
-                                    onChange={e => setTeacherNote(n => n ? { ...n, text: e.target.value } : n)}
+                                    value={activeTeacherNote.text}
+                                    onChange={e => setActiveTeacherNote(n => n ? { ...n, text: e.target.value } : n)}
                                     rows={3}
                                     className="w-full border border-amber-200 rounded-lg p-1.5 text-[9px] focus:outline-none focus:border-amber-400 bg-white resize-none"
                                   />
-                                  <div className="flex gap-1">
+                                  {/* ─ Couleur ─ */}
+                                  <div className="flex gap-1 items-center">
                                     {TEACHER_COLORS.map(c => (
-                                      <button key={c.value} onClick={() => setTeacherNote(n => n ? { ...n, color: c.value } : n)}
-                                        className={`w-4 h-4 rounded-full border-2 ${teacherNote.color === c.value ? "border-slate-700 scale-110" : "border-transparent"}`}
+                                      <button key={c.value} onClick={() => setActiveTeacherNote(n => n ? { ...n, color: c.value } : n)}
+                                        className={`w-4 h-4 rounded-full border-2 ${activeTeacherNote.color === c.value ? "border-slate-700 scale-110" : "border-transparent"}`}
                                         style={{ background: c.value }} title={c.label} />
                                     ))}
-                                    <button onClick={() => setTeacherNote(null)}
+                                    <button onClick={() => setActiveTeacherNote(null)}
                                       className="ml-auto px-1.5 py-0.5 bg-red-50 border border-red-200 rounded text-[8px] text-red-500 font-bold hover:bg-red-100 transition">
                                       ✕ Supprimer
                                     </button>
                                   </div>
+                                  {/* ─ Taille ─ */}
                                   <div className="flex items-center gap-1.5">
                                     <span className="text-[8px] text-slate-500 w-10 shrink-0">Taille</span>
                                     <input type="range" min={1.5} max={5} step={0.1}
-                                      value={teacherNote.fontSize}
-                                      onChange={e => setTeacherNote(n => n ? { ...n, fontSize: parseFloat(e.target.value) } : n)}
+                                      value={activeTeacherNote.fontSize}
+                                      onChange={e => setActiveTeacherNote(n => n ? { ...n, fontSize: parseFloat(e.target.value) } : n)}
                                       className="flex-1 accent-amber-500 h-1" />
-                                    <span className="text-[8px] font-bold text-amber-600 w-6">{teacherNote.fontSize.toFixed(1)}</span>
+                                    <span className="text-[8px] font-bold text-amber-600 w-6">{activeTeacherNote.fontSize.toFixed(1)}</span>
+                                  </div>
+                                  {/* ─ Police ─ */}
+                                  <div className="space-y-1">
+                                    <span className="text-[8px] text-slate-500 font-semibold">Police du commentaire</span>
+                                    <div className="grid grid-cols-3 gap-1">
+                                      {HANDWRITING_FONTS.map(f => (
+                                        <button key={f.key}
+                                          onClick={() => setActiveTeacherNote(n => n ? { ...n, fontKey: f.key } : n)}
+                                          className={`px-1 py-1 rounded border text-[7px] truncate transition ${activeTeacherNote.fontKey === f.key ? "border-amber-400 bg-amber-50 font-bold text-amber-700" : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}
+                                          style={{ fontFamily: f.family }}
+                                          title={f.label}>
+                                          {f.label}
+                                        </button>
+                                      ))}
+                                    </div>
+                                    {/* Live preview */}
+                                    <div className="mt-1 px-2 py-1.5 bg-white border border-amber-100 rounded-lg overflow-hidden">
+                                      <span style={{
+                                        fontFamily: getFontFamily(activeTeacherNote.fontKey),
+                                        color: activeTeacherNote.color,
+                                        fontSize: "11px",
+                                        lineHeight: 1.4,
+                                      }}>
+                                        {activeTeacherNote.text.slice(0, 60) || "Aperçu du commentaire…"}
+                                      </span>
+                                    </div>
                                   </div>
                                   <p className="text-[8px] text-amber-500">📌 Mode Déplacer → glissez le commentaire sur la page</p>
                                 </div>
@@ -4148,7 +4292,7 @@ export default function App() {
                                     {isGenNote ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
                                     {isGenNote ? "Génération…" : "Générer commentaire Gemini"}
                                   </button>
-                                  <button onClick={() => setTeacherNote({ text: "Bon travail dans l'ensemble. L'élève démontre une compréhension satisfaisante du sujet.", x: 5, y: 88, color: DEFAULT_TEACHER_COLOR, fontKey: DEFAULT_TEACHER_FONT, fontSize: DEFAULT_TEACHER_FONTSIZE })}
+                                  <button onClick={() => setActiveTeacherNote({ text: "Bon travail dans l'ensemble. L'élève démontre une compréhension satisfaisante du sujet.", x: 5, y: 88, color: DEFAULT_TEACHER_COLOR, fontKey: DEFAULT_TEACHER_FONT, fontSize: DEFAULT_TEACHER_FONTSIZE })}
                                     className="w-full py-1.5 border border-amber-200 rounded-xl text-[9px] font-semibold text-amber-700 hover:bg-amber-100 transition">
                                     ✏️ Écrire manuellement
                                   </button>
@@ -4357,8 +4501,8 @@ export default function App() {
                                   const f = e.target.files?.[0]; if (!f) return;
                                   const r = new FileReader();
                                   r.onload = ev => {
-                                    setArtImages(prev => ({ ...prev, [previewPage]: ev.target?.result as string }));
-                                    setArtTransforms(prev => ({
+                                    setActiveArtImages(prev => ({ ...prev, [previewPage]: ev.target?.result as string }));
+                                    setActiveArtTransforms(prev => ({
                                       ...prev,
                                       [previewPage]: { x: 5, y: 5, w: 60, h: 60, cropX: 0, cropY: 0, cropW: 100, cropH: 100, rotation: 0 },
                                     }));
@@ -4366,10 +4510,10 @@ export default function App() {
                                   r.readAsDataURL(f);
                                 }} />
                               <Image className="h-5 w-5 text-slate-300 mx-auto mb-1" />
-                              <p className="text-[9px] font-semibold text-slate-400">{artImages[previewPage] ? "Changer photo" : "Insérer photo / dessin"}</p>
+                              <p className="text-[9px] font-semibold text-slate-400">{activeArtImages[previewPage] ? "Changer photo" : "Insérer photo / dessin"}</p>
                             </label>
-                            {artImages[previewPage] && (() => {
-                              const at = artTransforms[previewPage] ?? { x: 5, y: 5, w: 60, h: 60, cropX: 0, cropY: 0, cropW: 100, cropH: 100, rotation: 0 };
+                            {activeArtImages[previewPage] && (() => {
+                              const at = activeArtTransforms[previewPage] ?? { x: 5, y: 5, w: 60, h: 60, cropX: 0, cropY: 0, cropW: 100, cropH: 100, rotation: 0 };
                               return (
                                 <div className="space-y-2">
                                   <div className="bg-slate-50 rounded-xl border border-slate-200 p-2.5 space-y-2">
@@ -4388,7 +4532,7 @@ export default function App() {
                                             onFocus={e => e.target.select()}
                                             onChange={e => {
                                               const v = parseFloat(e.target.value);
-                                              if (!isNaN(v)) setArtTransforms(prev => ({ ...prev, [previewPage]: { ...at, [ctrl.key]: v } }));
+                                              if (!isNaN(v)) setActiveArtTransforms(prev => ({ ...prev, [previewPage]: { ...at, [ctrl.key]: v } }));
                                             }}
                                             className="w-full border border-slate-200 rounded px-1.5 py-0.5 text-[9px] focus:outline-none focus:border-indigo-400 bg-white" />
                                         </div>
@@ -4397,17 +4541,17 @@ export default function App() {
                                     <div className="flex items-center gap-1.5">
                                       <span className="text-[9px] text-slate-500 w-12 shrink-0">Rotation</span>
                                       <input type="range" min={-180} max={180} step={1} value={at.rotation}
-                                        onChange={e => setArtTransforms(prev => ({ ...prev, [previewPage]: { ...at, rotation: parseFloat(e.target.value) } }))}
+                                        onChange={e => setActiveArtTransforms(prev => ({ ...prev, [previewPage]: { ...at, rotation: parseFloat(e.target.value) } }))}
                                         className="flex-1 accent-indigo-500 h-1.5" />
                                       <span className="text-[9px] font-bold text-indigo-600 w-8 text-right">{at.rotation}°</span>
                                     </div>
-                                    <button onClick={() => setArtTransforms(prev => ({ ...prev, [previewPage]: { x: 5, y: 5, w: 60, h: 60, cropX: 0, cropY: 0, cropW: 100, cropH: 100, rotation: 0 } }))}
+                                    <button onClick={() => setActiveArtTransforms(prev => ({ ...prev, [previewPage]: { x: 5, y: 5, w: 60, h: 60, cropX: 0, cropY: 0, cropW: 100, cropH: 100, rotation: 0 } }))}
                                       className="w-full py-1 border border-slate-200 rounded text-[9px] font-semibold text-slate-500 hover:bg-slate-100 transition">
                                       ↺ Réinitialiser position
                                     </button>
                                   </div>
                                   <p className="text-[8px] text-indigo-500">📌 Mode Déplacer → glissez l'image sur la page · ⤡ coin bas-droit pour redimensionner</p>
-                                  <button onClick={() => { setArtImages(prev => { const n = { ...prev }; delete n[previewPage]; return n; }); setArtTransforms(prev => { const n = { ...prev }; delete n[previewPage]; return n; }); }}
+                                  <button onClick={() => { setActiveArtImages(prev => { const n = { ...prev }; delete n[previewPage]; return n; }); setActiveArtTransforms(prev => { const n = { ...prev }; delete n[previewPage]; return n; }); }}
                                     className="w-full py-1 border border-red-200 rounded-lg text-[9px] font-semibold text-red-500 hover:bg-red-50 transition">
                                     🗑 Supprimer image
                                   </button>
@@ -4423,9 +4567,9 @@ export default function App() {
                             <div className="flex items-center gap-1.5">
                               <Star className="h-3.5 w-3.5 text-red-500" />
                               <p className="text-[10px] font-black text-red-600 uppercase tracking-wide flex-1">Annotations Notation</p>
-                              {gradeMarks.length > 0 && (
+                              {activeGradeMarks.length > 0 && (
                                 <span className="text-[9px] font-bold bg-red-100 text-red-600 px-1.5 py-0.5 rounded-full">
-                                  {gradeMarks.length} total
+                                  {activeGradeMarks.length} total
                                 </span>
                               )}
                             </div>
@@ -4453,10 +4597,10 @@ export default function App() {
                             </button>
 
                             {/* Existing marks list */}
-                            {gradeMarks.filter(m => m.pageIndex === previewPage).length > 0 && (
+                            {activeGradeMarks.filter(m => m.pageIndex === previewPage).length > 0 && (
                               <div className="space-y-1.5">
-                                <p className="text-[9px] font-bold text-slate-500 uppercase tracking-wide">Sur cette page ({gradeMarks.filter(m => m.pageIndex === previewPage).length}) :</p>
-                                {gradeMarks.filter(m => m.pageIndex === previewPage).map(m => (
+                                <p className="text-[9px] font-bold text-slate-500 uppercase tracking-wide">Sur cette page ({activeGradeMarks.filter(m => m.pageIndex === previewPage).length}) :</p>
+                                {activeGradeMarks.filter(m => m.pageIndex === previewPage).map(m => (
                                   <div key={m.id}
                                     onClick={() => setSelectedGradeMarkId(selectedGradeMarkId === m.id ? null : m.id)}
                                     className={`rounded-xl border p-2 space-y-1.5 cursor-pointer transition
@@ -4528,17 +4672,17 @@ export default function App() {
                             )}
 
                             {/* All pages summary */}
-                            {gradeMarks.length > 0 && (
+                            {activeGradeMarks.length > 0 && (
                               <div className="flex items-center justify-between border-t border-slate-100 pt-2">
-                                <span className="text-[8px] text-slate-400">Total toutes pages: {gradeMarks.length}</span>
-                                <button onClick={() => setGradeMarks([])}
+                                <span className="text-[8px] text-slate-400">Total toutes pages: {activeGradeMarks.length}</span>
+                                <button onClick={() => setActiveGradeMarks([])}
                                   className="text-[8px] font-semibold text-red-400 hover:text-red-600 transition">
                                   🗑 Tout effacer
                                 </button>
                               </div>
                             )}
 
-                            {gradeMarks.filter(m => m.pageIndex === previewPage).length === 0 && (
+                            {activeGradeMarks.filter(m => m.pageIndex === previewPage).length === 0 && (
                               <div className="py-5 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200">
                                 <Star className="h-6 w-6 text-slate-200 mx-auto mb-1.5" />
                                 <p className="text-[9px] text-slate-400 font-semibold">Aucune annotation sur P.{previewPage + 1}</p>
@@ -4846,10 +4990,10 @@ export default function App() {
                         { k: "showGeometry" as const, label: "Géométrie" },
                         { k: "showPressure" as const, label: "Pression"  },
                       ].map(t => (
-                        <button key={t.k} onClick={() => setEffects(prev => ({ ...prev, [t.k]: !prev[t.k] }))}
+                        <button key={t.k} onClick={() => setActiveEffects(prev => ({ ...prev, [t.k]: !prev[t.k] }))}
                           className={`flex items-center gap-1.5 px-2 py-1.5 rounded-lg border text-[10px] font-semibold transition
-                            ${effects[t.k] ? "bg-indigo-500 text-white border-indigo-500" : "bg-white text-slate-400 border-slate-200"}`}>
-                          {effects[t.k] ? <CheckCircle className="h-3 w-3" /> : <X className="h-3 w-3" />}
+                            ${activeEffects[t.k] ? "bg-indigo-500 text-white border-indigo-500" : "bg-white text-slate-400 border-slate-200"}`}>
+                          {activeEffects[t.k] ? <CheckCircle className="h-3 w-3" /> : <X className="h-3 w-3" />}
                           {t.label}
                         </button>
                       ))}
@@ -4866,7 +5010,7 @@ export default function App() {
 
                   <button onClick={() => {
                     if (batchMode) printAllBatch();
-                    else printSingle(activeProfile, answers, offsets, comments);
+                    else printSingle(activeProfile, activeAnswers, activeOffsets, activeComments);
                   }}
                     className="w-full py-5 bg-slate-900 text-white rounded-2xl font-black text-xl shadow-2xl hover:bg-black hover:scale-[1.01] active:scale-[0.99] transition-all flex items-center justify-center gap-3">
                     <Printer className="h-6 w-6" />
