@@ -143,12 +143,25 @@ type WorkflowStep = "import" | "students" | "grade" | "solve" | "preview" | "pri
 // ─────────────────────────────────────────────────────────────────────────────
 
 const HANDWRITING_FONTS = [
-  { key: "homemade-apple",  label: "Écolier",  family: "Homemade Apple",  cssVar: "--font-homemade"   },
-  { key: "marck-script",    label: "Feutre",   family: "Marck Script",    cssVar: "--font-marck"     },
-  { key: "parisienne",      label: "Fine",     family: "Parisienne",      cssVar: "--font-parisienne" },
-  { key: "allura",          label: "Fluide",   family: "Allura",          cssVar: "--font-allura"    },
-  { key: "la-belle-aurore", label: "Stylée",   family: "La Belle Aurore", cssVar: "--font-la-belle"  },
-  { key: "bad-script",      label: "Plume",    family: "Bad Script",      cssVar: "--font-badscript" },
+  // ── Classiques (écolier / cahier) ──
+  { key: "homemade-apple",  label: "Écolier",    family: "Homemade Apple",       cssVar: "--font-homemade",   category: "enfant"   },
+  { key: "kalam",           label: "Cahier",     family: "Kalam",                cssVar: "--font-kalam",      category: "enfant"   },
+  { key: "indie-flower",    label: "Bulle",      family: "Indie Flower",         cssVar: "--font-indie",      category: "enfant"   },
+  { key: "patrick-hand",    label: "Propre",     family: "Patrick Hand",         cssVar: "--font-patrick",    category: "enfant"   },
+  { key: "caveat",          label: "Rapide",     family: "Caveat",               cssVar: "--font-caveat",     category: "enfant"   },
+  // ── Cursive / Stylo ──
+  { key: "marck-script",    label: "Feutre",     family: "Marck Script",         cssVar: "--font-marck",      category: "cursive"  },
+  { key: "bad-script",      label: "Plume",      family: "Bad Script",           cssVar: "--font-badscript",  category: "cursive"  },
+  { key: "dancing-script",  label: "Cursive",    family: "Dancing Script",       cssVar: "--font-dancing",    category: "cursive"  },
+  { key: "shadows",         label: "Légère",     family: "Shadows Into Light",   cssVar: "--font-shadows",    category: "cursive"  },
+  { key: "nothing",         label: "Naturelle",  family: "Nothing You Could Do", cssVar: "--font-nothing",    category: "cursive"  },
+  // ── Élégante / Calligraphie ──
+  { key: "parisienne",      label: "Fine",       family: "Parisienne",           cssVar: "--font-parisienne", category: "elegante" },
+  { key: "allura",          label: "Fluide",     family: "Allura",               cssVar: "--font-allura",     category: "elegante" },
+  { key: "la-belle-aurore", label: "Stylée",     family: "La Belle Aurore",      cssVar: "--font-la-belle",   category: "elegante" },
+  { key: "satisfy",         label: "Ronde",      family: "Satisfy",              cssVar: "--font-satisfy",    category: "elegante" },
+  { key: "sacramento",      label: "Italique",   family: "Sacramento",           cssVar: "--font-sacramento", category: "elegante" },
+  { key: "great-vibes",     label: "Calligr.",   family: "Great Vibes",          cssVar: "--font-greatvibes", category: "elegante" },
 ];
 
 const INK_COLORS = [
@@ -172,6 +185,11 @@ const FONT_KEY_MAP: Record<string, string> = {
   "homemade apple": "homemade-apple", "marck script": "marck-script",
   parisienne: "parisienne", allura: "allura",
   "la belle aurore": "la-belle-aurore", "bad script": "bad-script",
+  caveat: "caveat", kalam: "kalam",
+  "indie flower": "indie-flower", "patrick hand": "patrick-hand",
+  "dancing script": "dancing-script", satisfy: "satisfy",
+  sacramento: "sacramento", "great vibes": "great-vibes",
+  "shadows into light": "shadows", "nothing you could do": "nothing",
 };
 const COLOR_MAP: Record<string, string> = {
   blue: "#1d3278", black: "#1c1c1e", red: "#be0000", green: "#0a7a2a",
@@ -1932,11 +1950,233 @@ function buildPrintHTML(
   return `<!DOCTYPE html><html lang="fr"><head>
 <meta charset="UTF-8"/>
 <title>${studentName} — nanobanana PRO</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Homemade+Apple&family=Marck+Script&family=Parisienne&family=Allura&family=La+Belle+Aurore&family=Bad+Script&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Homemade+Apple&family=Marck+Script&family=Parisienne&family=Allura&family=La+Belle+Aurore&family=Bad+Script&family=Caveat:wght@400;600&family=Dancing+Script:wght@400;600&family=Sacramento&family=Satisfy&family=Great+Vibes&family=Kalam:wght@300;400;700&family=Indie+Flower&family=Shadows+Into+Light&family=Patrick+Hand&family=Nothing+You+Could+Do&display=swap">
 <style>*{margin:0;padding:0;box-sizing:border-box}html,body{background:white}@page{margin:0;size:A4 portrait}</style>
 </head><body>${pagesHTML}
 <script>document.fonts.ready.then(()=>{setTimeout(()=>{window.print();},600);});<\/script>
 </body></html>`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STUDENT PROFILE QUICK-EDIT MODAL
+// ─────────────────────────────────────────────────────────────────────────────
+const FONT_CATEGORIES = [
+  { id: "enfant",   label: "Écolier / Cahier" },
+  { id: "cursive",  label: "Cursive / Stylo"  },
+  { id: "elegante", label: "Élégante / Calligraphie" },
+];
+
+function StudentProfileModal({
+  profile, onSave, onClose, effects, variantSeed,
+  isAnalyzing, analyzeHandwriting,
+}: {
+  profile: StudentProfile;
+  onSave: (p: StudentProfile) => void;
+  onClose: () => void;
+  effects: PageEffectOverrides;
+  variantSeed: number;
+  isAnalyzing: boolean;
+  analyzeHandwriting: (b64: string, name: string) => void;
+}) {
+  const [local, setLocal] = React.useState<StudentProfile>({ ...profile });
+  const upd = <K extends keyof StudentProfile>(k: K, v: StudentProfile[K]) =>
+    setLocal(prev => ({ ...prev, [k]: v }));
+  const [fontCat, setFontCat] = React.useState<string>("enfant");
+
+  const fontsInCat = HANDWRITING_FONTS.filter(f => f.category === fontCat);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: "rgba(15,23,42,0.65)", backdropFilter: "blur(6px)" }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl max-h-[92vh] overflow-hidden flex flex-col"
+        style={{ boxShadow: "0 32px 80px rgba(0,0,0,0.25)" }}>
+
+        {/* Header */}
+        <div className="flex items-center gap-3 px-6 py-4 border-b border-slate-100"
+          style={{ background: "linear-gradient(135deg,#f8faff,#f0f4ff)" }}>
+          <div className="w-10 h-10 rounded-2xl bg-indigo-500 text-white flex items-center justify-center font-black text-lg shadow-lg shadow-indigo-200">
+            {local.name[0]?.toUpperCase() || "?"}
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-[10px] font-bold text-indigo-400 uppercase tracking-widest">Modifier l'élève</p>
+            <p className="font-black text-slate-900 text-base leading-none mt-0.5">{local.name}</p>
+          </div>
+          <button onClick={onClose} className="w-8 h-8 rounded-xl bg-slate-100 hover:bg-slate-200 flex items-center justify-center transition text-slate-500 font-bold text-lg">×</button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
+
+          {/* Name */}
+          <div>
+            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Nom de l'élève</label>
+            <input type="text" value={local.name} onChange={e => upd("name", e.target.value)}
+              className="w-full mt-1.5 border-2 border-slate-200 focus:border-indigo-400 rounded-2xl px-4 py-2.5 text-sm font-bold focus:outline-none transition"
+              placeholder="Ex: Ahmed Benali…" />
+          </div>
+
+          {/* Handwriting sample */}
+          <div>
+            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Photo d'écriture (empreinte AI)</label>
+            <label className="mt-1.5 flex items-center gap-3 border-2 border-dashed border-slate-200 rounded-2xl p-4 cursor-pointer hover:border-indigo-300 hover:bg-indigo-50 transition relative">
+              <input type="file" accept="image/*" className="absolute inset-0 opacity-0 cursor-pointer"
+                onChange={e => {
+                  const f = e.target.files?.[0]; if (!f) return;
+                  const r = new FileReader();
+                  r.onload = ev => analyzeHandwriting(ev.target?.result as string, f.name);
+                  r.readAsDataURL(f);
+                }} />
+              {isAnalyzing
+                ? <><RefreshCw className="h-5 w-5 animate-spin text-indigo-500" /><span className="text-xs font-bold text-indigo-600">Analyse Gemini en cours…</span></>
+                : local.fingerprint
+                  ? <><CheckCircle className="h-5 w-5 text-emerald-500" /><div><p className="text-xs font-bold text-emerald-700">Empreinte analysée — {local.fingerprint.confidenceScore}% confiance</p><p className="text-[10px] text-emerald-600">{local.analysisDescription?.substring(0, 80)}…</p></div></>
+                  : <><BookOpen className="h-5 w-5 text-slate-300" /><span className="text-xs font-semibold text-slate-400">Déposer une photo pour analyser l'écriture</span></>}
+            </label>
+          </div>
+
+          {/* Font category tabs */}
+          <div>
+            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Style d'écriture</label>
+            {/* Category tabs */}
+            <div className="flex gap-1.5 mt-2 mb-3">
+              {FONT_CATEGORIES.map(cat => (
+                <button key={cat.id} onClick={() => setFontCat(cat.id)}
+                  className={`px-3 py-1 rounded-full text-[10px] font-bold transition border
+                    ${fontCat === cat.id ? "bg-indigo-500 text-white border-indigo-500 shadow-sm" : "bg-white text-slate-500 border-slate-200 hover:border-indigo-200 hover:text-indigo-600"}`}>
+                  {cat.label}
+                </button>
+              ))}
+            </div>
+            {/* Font grid */}
+            <div className="grid grid-cols-3 gap-2">
+              {fontsInCat.map(f => (
+                <button key={f.key} onClick={() => upd("fontKey", f.key)}
+                  className={`relative px-3 py-3 border-2 rounded-2xl transition flex flex-col items-center gap-1 group
+                    ${local.fontKey === f.key ? "border-indigo-400 bg-indigo-50 shadow-md shadow-indigo-100" : "border-slate-200 hover:border-indigo-200 bg-white hover:bg-indigo-50/30"}`}>
+                  {local.fontKey === f.key && (
+                    <div className="absolute top-1.5 right-1.5 w-4 h-4 bg-indigo-500 rounded-full flex items-center justify-center">
+                      <CheckCircle className="h-2.5 w-2.5 text-white" />
+                    </div>
+                  )}
+                  <span style={{ fontFamily: f.family, fontSize: 22, color: local.inkColor, lineHeight: 1 }}>
+                    Abc
+                  </span>
+                  <span className="text-[9px] font-bold text-slate-500">{f.label}</span>
+                  <span className="text-[8px] text-slate-300 hidden group-hover:block absolute bottom-0 left-0 right-0 text-center pb-0.5">{f.family}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Ink color */}
+          <div>
+            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Couleur d'encre</label>
+            <div className="flex flex-wrap gap-2 mt-2">
+              {INK_COLORS.map(c => (
+                <button key={c.value} title={c.label} onClick={() => upd("inkColor", c.value)}
+                  className={`w-8 h-8 rounded-full border-3 transition shadow-sm
+                    ${local.inkColor === c.value ? "border-slate-700 scale-110 ring-2 ring-offset-2 ring-indigo-400" : "border-transparent hover:border-slate-400 hover:scale-105"}`}
+                  style={{ background: c.value }} />
+              ))}
+              <label className="w-8 h-8 rounded-full border-2 border-slate-300 cursor-pointer relative overflow-hidden hover:scale-105 transition">
+                <input type="color" value={local.inkColor} onChange={e => upd("inkColor", e.target.value)} className="absolute inset-0 opacity-0 w-full h-full cursor-pointer" />
+                <div className="w-full h-full rounded-full" style={{ background: local.inkColor }} />
+              </label>
+            </div>
+          </div>
+
+          {/* Sliders */}
+          <div>
+            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1">
+              <Sliders className="h-3 w-3" /> Paramètres d'écriture
+            </label>
+            <div className="space-y-3 mt-2">
+              {[
+                { k: "fontSize"           as const, label: "Taille de police", icon: "📝", min: 11, max: 26, step: 0.5  },
+                { k: "messinessIntensity" as const, label: "Désordre / naturel", icon: "🌀", min: 0,  max: 6,  step: 0.1  },
+                { k: "lineWobbleAmp"      as const, label: "Tremblement des lignes", icon: "〰️", min: 0,  max: 5,  step: 0.1  },
+                { k: "penThickness"       as const, label: "Épaisseur du trait", icon: "🖊️", min: 0.5,max: 3.5,step: 0.1  },
+                { k: "skewAngle"          as const, label: "Inclinaison", icon: "📐", min: -15,max: 15, step: 0.5  },
+                { k: "letterSpacing"      as const, label: "Espacement lettres", icon: "↔️", min: -3, max: 6,  step: 0.1  },
+              ].map(s => (
+                <div key={s.k} className="flex items-center gap-3 bg-slate-50 rounded-xl px-3 py-2">
+                  <span className="text-sm w-5 text-center shrink-0">{s.icon}</span>
+                  <span className="text-[10px] font-semibold text-slate-500 w-28 shrink-0">{s.label}</span>
+                  <input type="range" min={s.min} max={s.max} step={s.step}
+                    value={local[s.k] as number}
+                    onChange={e => upd(s.k, parseFloat(e.target.value))}
+                    className="flex-1 accent-indigo-500 h-1.5 rounded" />
+                  <span className="text-[10px] font-black text-indigo-700 w-8 text-right shrink-0">{(local[s.k] as number).toFixed(1)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Realism effects */}
+          <div>
+            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1">
+              <Zap className="h-3 w-3" /> Effets de réalisme
+            </label>
+            <div className="grid grid-cols-2 gap-2 mt-2">
+              {[
+                { k: "enableRatures" as const, label: "Ratures",      emoji: "✏️", sub: "raturesRate" as const, min: 0.01, max: 0.15 },
+                { k: "enableBlanco"  as const, label: "Blanco",       emoji: "⬜", sub: "blancoRate"  as const, min: 0.01, max: 0.10 },
+                { k: "enableSmudges" as const, label: "Bavures",      emoji: "💧", sub: null, min: 0, max: 0 },
+                { k: "enablePressureVar" as const, label: "Pression var.", emoji: "👁️", sub: null, min: 0, max: 0 },
+                { k: "enableLineWobble"  as const, label: "Ligne ondulée", emoji: "〰️", sub: "lineWobbleAmp" as const, min: 0, max: 5 },
+                { k: "inkDrySkipping"    as const, label: "Encre sèche", emoji: "💦", sub: null, min: 0, max: 0 },
+                { k: "enableUnreadableLetters" as const, label: "Illisible", emoji: "🔤", sub: null, min: 0, max: 0 },
+                { k: "letterCaseChaos"         as const, label: "Casse aléat.", emoji: "Aa", sub: null, min: 0, max: 0 },
+              ].map(s => (
+                <div key={s.k}
+                  className={`p-2.5 border-2 rounded-xl transition cursor-pointer select-none
+                    ${local[s.k] ? "border-indigo-300 bg-indigo-50" : "border-slate-100 bg-slate-50 hover:border-slate-200"}`}
+                  onClick={() => upd(s.k, !local[s.k] as any)}>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm">{s.emoji}</span>
+                    <p className="text-[10px] font-bold text-slate-700 flex-1">{s.label}</p>
+                    <div className={`w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 transition
+                      ${local[s.k] ? "bg-indigo-500 border-indigo-500" : "border-slate-300"}`}>
+                      {local[s.k] && <CheckCircle className="h-2.5 w-2.5 text-white" />}
+                    </div>
+                  </div>
+                  {s.sub && local[s.k] && (
+                    <input type="range" min={s.min} max={s.max} step={0.005}
+                      value={local[s.sub] as number}
+                      onClick={e => e.stopPropagation()}
+                      onChange={e => { e.stopPropagation(); upd(s.sub!, parseFloat(e.target.value)); }}
+                      className="w-full mt-1.5 accent-indigo-400 h-1 rounded" />
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Live preview */}
+          <div className="border-2 border-slate-100 rounded-2xl p-4 bg-slate-50">
+            <p className="text-[9px] font-bold text-slate-400 mb-2 uppercase tracking-widest">Aperçu en direct</p>
+            <HandwrittenText
+              text="Voici mon écriture en direct avec tous les effets."
+              qId="modal-preview" profile={local} variantSeed={variantSeed} effects={effects} />
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="flex gap-3 px-6 py-4 border-t border-slate-100 bg-white">
+          <button onClick={onClose}
+            className="flex-1 py-2.5 border-2 border-slate-200 rounded-2xl font-bold text-sm text-slate-600 hover:bg-slate-50 transition">
+            Annuler
+          </button>
+          <button onClick={() => onSave(local)}
+            disabled={!local.name.trim()}
+            className="flex-1 py-2.5 bg-indigo-500 text-white rounded-2xl font-black text-sm hover:bg-indigo-600 transition shadow-lg shadow-indigo-200 disabled:opacity-50 flex items-center justify-center gap-2">
+            <Save className="h-4 w-4" /> Enregistrer
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1981,6 +2221,8 @@ export default function App() {
   const [previewPage, setPreviewPage]   = useState(0);
   const [editMode, setEditMode]         = useState(false);
   const [offsets, setOffsets]           = useState<Record<string, { x: number; y: number }>>({});
+  // Student profile quick-edit modal
+  const [editProfileTarget, setEditProfileTarget] = useState<StudentProfile | null>(null);
   const [activeBatchIdx, setActiveBatchIdx] = useState(0);
 
   const [effects, setEffects]           = useState<PageEffectOverrides>(defaultEffects());
@@ -2131,12 +2373,11 @@ export default function App() {
         const s = d.handwritingStyle as HandwritingFingerprint;
         const fontKey  = FONT_KEY_MAP[s.suggestedFont?.toLowerCase()] ?? "homemade-apple";
         const inkColor = s.suggestedColor?.startsWith("#") ? s.suggestedColor : (COLOR_MAP[s.suggestedColor?.toLowerCase()] ?? activeProfile.inkColor);
-        // 100% fidelity: apply ALL fingerprint parameters + force ALL effects ON
-        setActiveProfile(prev => ({
+        // Build the fingerprint patch (shared between active profile and modal)
+        const fpPatch = (prev: StudentProfile) => ({
           ...prev,
           hwImage: b64, hwImageBase64: b64, hwImageName: fileName,
           fontKey, inkColor,
-          // Typography from fingerprint
           fontSize:         Math.max(11, s.suggestedSize ?? prev.fontSize),
           skewAngle:        s.suggestedRotation   ?? prev.skewAngle,
           messinessIntensity: s.messinessIntensity ?? prev.messinessIntensity,
@@ -2144,22 +2385,21 @@ export default function App() {
           wordDrift:        s.wordSpacingPx != null ? Math.max(0.5, s.wordSpacingPx / 5) : prev.wordDrift,
           penThickness:     s.penThickness    ?? prev.penThickness,
           lineWobbleAmp:    s.baselineWobbleAmp ?? prev.lineWobbleAmp,
-          // Character-level effects from fingerprint
           enableUnreadableLetters: s.enableUnreadableLetters ?? true,
           letterCaseChaos:         s.letterCaseChaos         ?? true,
           inkDrySkipping:          (s.inkDrySkipRate ?? 0) > 0.02 ? true : prev.inkDrySkipping,
-          // Realism effects — ALWAYS ON after fingerprint analysis (100% fidelity mode)
-          enableRatures: true,
-          raturesRate:   Math.max(0.02, s.inferredRaturesRate ?? 0.05),
-          enableBlanco:  true,
-          blancoRate:    Math.max(0.015, s.inferredBlancoRate ?? 0.025),
-          enableSmudges: true,
-          enablePressureVar: true,
-          enableLineWobble:  true,
-          fingerprint: s,
-          analysisDescription: s.analysisDescription,
-          confidenceScore: s.confidenceScore,
-        }));
+          // 100% fidelity: ALWAYS ON
+          enableRatures: true, raturesRate: Math.max(0.02, s.inferredRaturesRate ?? 0.05),
+          enableBlanco:  true, blancoRate:  Math.max(0.015, s.inferredBlancoRate ?? 0.025),
+          enableSmudges: true, enablePressureVar: true, enableLineWobble: true,
+          fingerprint: s, analysisDescription: s.analysisDescription, confidenceScore: s.confidenceScore,
+        });
+        // Apply to modal (if open) OR to active profile
+        if (editProfileTarget) {
+          setEditProfileTarget(prev => prev ? fpPatch(prev) : prev);
+        } else {
+          setActiveProfile(prev => fpPatch(prev));
+        }
       }
     } catch (err) { console.error(err); }
     setIsAnalyzing(false);
@@ -2658,7 +2898,7 @@ export default function App() {
 
     const html = `<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"/>
 <title>Impression groupe — nanobanana PRO</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Homemade+Apple&family=Marck+Script&family=Parisienne&family=Allura&family=La+Belle+Aurore&family=Bad+Script&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Homemade+Apple&family=Marck+Script&family=Parisienne&family=Allura&family=La+Belle+Aurore&family=Bad+Script&family=Caveat:wght@400;600&family=Dancing+Script:wght@400;600&family=Sacramento&family=Satisfy&family=Great+Vibes&family=Kalam:wght@300;400;700&family=Indie+Flower&family=Shadows+Into+Light&family=Patrick+Hand&family=Nothing+You+Could+Do&display=swap">
 <style>*{margin:0;padding:0;box-sizing:border-box}html,body{background:white}@page{margin:0;size:A4 portrait}</style>
 </head><body>${allHTML}
 <script>document.fonts.ready.then(()=>{setTimeout(()=>{window.print();},600);});<\/script>
@@ -3009,7 +3249,15 @@ export default function App() {
                                     ${isInBatch ? "bg-purple-500 text-white shadow-sm" : "bg-white border-2 border-slate-300 text-slate-500 hover:border-purple-400"}`}>
                                   {isInBatch ? <CheckCircle className="h-4 w-4" /> : p.name[0]?.toUpperCase()}
                                 </button>
-                                <span className={`text-xs font-semibold flex-1 truncate ${isInBatch ? "text-purple-800" : "text-slate-600"}`}>{p.name}</span>
+                                <span className={`text-xs font-semibold flex-1 truncate ${isInBatch ? "text-purple-800" : "text-slate-600"}`}
+                                  style={{ fontFamily: getFontFamily(p.fontKey) }}>{p.name}</span>
+                                {/* Edit profile button */}
+                                <button
+                                  onClick={e => { e.stopPropagation(); setEditProfileTarget({ ...p, hwImage: p.hwImageBase64 || null }); }}
+                                  title="Modifier le profil"
+                                  className="p-1 rounded-lg hover:bg-purple-100 text-slate-300 hover:text-purple-600 transition shrink-0">
+                                  <Pencil className="h-3 w-3" />
+                                </button>
                                 {/* Per-student level selector — only when selected */}
                                 {isInBatch && (
                                   <select
@@ -3139,20 +3387,34 @@ export default function App() {
                           : savedProfiles.map(p => (
                             <div key={p.name}
                               onClick={() => setActiveProfile({ ...p, hwImage: p.hwImageBase64 || p.hwImage || null })}
-                              className={`flex items-center gap-2.5 p-2.5 border rounded-xl cursor-pointer transition
+                              className={`flex items-center gap-2.5 p-2.5 border rounded-xl cursor-pointer transition group
                                 ${activeProfile.name === p.name ? "border-indigo-300 bg-indigo-50 shadow-sm" : "border-slate-100 hover:border-slate-300 hover:bg-slate-50"}`}>
-                              <div className="w-8 h-8 rounded-full bg-indigo-500 text-white flex items-center justify-center font-bold text-sm shrink-0">
+                              {/* Avatar with font preview */}
+                              <div className="w-9 h-9 rounded-full bg-gradient-to-br from-indigo-400 to-violet-500 text-white flex items-center justify-center font-black text-base shrink-0 shadow-sm"
+                                style={{ fontFamily: getFontFamily(p.fontKey) }}>
                                 {p.name[0]?.toUpperCase()}
                               </div>
                               <div className="flex-1 min-w-0">
-                                <p className="font-semibold text-xs text-slate-800 truncate">{p.name}</p>
-                                <p className="text-[9px] text-slate-400">{getFontFamily(p.fontKey)}</p>
-                                {p.fingerprint && <p className="text-[9px] text-emerald-600 font-bold">✦ {p.fingerprint.confidenceScore}%</p>}
+                                <p className="font-bold text-xs text-slate-800 truncate">{p.name}</p>
+                                <p className="text-[9px] text-slate-400" style={{ fontFamily: getFontFamily(p.fontKey) }}>
+                                  {getFontFamily(p.fontKey)}
+                                </p>
+                                {p.fingerprint && <p className="text-[9px] text-emerald-600 font-bold">✦ Empreinte {p.fingerprint.confidenceScore}%</p>}
                               </div>
                               {activeProfile.name === p.name && <CheckCircle className="h-3.5 w-3.5 text-indigo-500 shrink-0" />}
+                              {/* Edit button — opens quick-edit modal */}
+                              <button
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  setEditProfileTarget({ ...p, hwImage: p.hwImageBase64 || p.hwImage || null });
+                                }}
+                                title="Modifier l'élève"
+                                className="p-1.5 rounded-lg hover:bg-indigo-100 hover:text-indigo-600 text-slate-400 transition shrink-0 opacity-0 group-hover:opacity-100">
+                                <Pencil className="h-3 w-3" />
+                              </button>
                               <button onClick={e => { e.stopPropagation(); deleteProfile(p.name); }}
-                                className="p-1 rounded-lg hover:bg-red-50 transition shrink-0">
-                                <Trash2 className="h-3 w-3 text-red-400" />
+                                className="p-1 rounded-lg hover:bg-red-50 text-slate-300 hover:text-red-400 transition shrink-0">
+                                <Trash2 className="h-3 w-3" />
                               </button>
                             </div>
                           ))}
@@ -3201,14 +3463,21 @@ export default function App() {
                       {/* Font */}
                       <div>
                         <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">Style d'écriture</label>
-                        <div className="grid grid-cols-3 gap-1.5 mt-1">
-                          {HANDWRITING_FONTS.map(f => (
-                            <button key={f.key} onClick={() => upd("fontKey", f.key)}
-                              className={`px-2 py-2 text-[11px] border rounded-lg transition font-semibold
-                                ${activeProfile.fontKey === f.key ? "border-indigo-400 bg-indigo-50 text-indigo-700 shadow-sm" : "border-slate-200 hover:border-slate-300 bg-white"}`}
-                              style={{ fontFamily: f.family }}>{f.label}</button>
-                          ))}
-                        </div>
+                        {FONT_CATEGORIES.map(cat => (
+                          <div key={cat.id} className="mt-2">
+                            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">{cat.label}</p>
+                            <div className="grid grid-cols-3 gap-1.5">
+                              {HANDWRITING_FONTS.filter(f => f.category === cat.id).map(f => (
+                                <button key={f.key} onClick={() => upd("fontKey", f.key)}
+                                  className={`px-2 py-2.5 border-2 rounded-xl transition flex flex-col items-center gap-0.5
+                                    ${activeProfile.fontKey === f.key ? "border-indigo-400 bg-indigo-50 shadow-sm" : "border-slate-100 hover:border-slate-300 bg-white"}`}>
+                                  <span style={{ fontFamily: f.family, fontSize: 18, color: activeProfile.inkColor, lineHeight: 1 }}>Abc</span>
+                                  <span className={`text-[9px] font-bold ${activeProfile.fontKey === f.key ? "text-indigo-700" : "text-slate-500"}`}>{f.label}</span>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
                       </div>
 
                       {/* Ink color */}
@@ -4571,6 +4840,31 @@ export default function App() {
           </AnimatePresence>
         </main>
       </div>
+
+      {/* ══ STUDENT PROFILE QUICK-EDIT MODAL ══ */}
+      {editProfileTarget && (
+        <StudentProfileModal
+          profile={editProfileTarget}
+          onClose={() => setEditProfileTarget(null)}
+          onSave={async (updated) => {
+            // Save to DB and update lists
+            await saveProfile(updated);
+            // If this was the active profile, update it too
+            if (activeProfile.name === editProfileTarget.name) {
+              setActiveProfile({ ...updated, hwImage: updated.hwImageBase64 || updated.hwImage || null });
+            }
+            // Update in batch students if present
+            setBatchStudents(prev => prev.map(b =>
+              b.profile.name === editProfileTarget.name ? { ...b, profile: { ...updated, hwImage: updated.hwImageBase64 || updated.hwImage || null } } : b
+            ));
+            setEditProfileTarget(null);
+          }}
+          effects={effects}
+          variantSeed={variantSeed}
+          isAnalyzing={isAnalyzing}
+          analyzeHandwriting={analyzeHandwriting}
+        />
+      )}
     </div>
   );
 }

@@ -2,7 +2,7 @@
  * nanobanana — Styles CSS
  * Polices UNIQUEMENT manuscrites — aucune police standard
  */
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Parisienne&family=Allura&family=Homemade+Apple&family=Bad+Script&family=Marck+Script&family=La+Belle+Aurore&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Parisienne&family=Allura&family=Homemade+Apple&family=Bad+Script&family=Marck+Script&family=La+Belle+Aurore&family=Caveat:wght@400;600&family=Dancing+Script:wght@400;600&family=Sacramento&family=Satisfy&family=Great+Vibes&family=Kalam:wght@300;400;700&family=Indie+Flower&family=Shadows+Into+Light&family=Patrick+Hand&family=Nothing+You+Could+Do&display=swap');
 @import "tailwindcss";
 
 @theme {
@@ -10,12 +10,23 @@
   --font-sans: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
   
   /* Polices manuscrites élèves — la seule sélection autorisée */
-  --font-homemade:   "Homemade Apple",  cursive;
-  --font-marck:      "Marck Script",    cursive;
-  --font-parisienne: "Parisienne",      cursive;
-  --font-allura:     "Allura",          cursive;
-  --font-la-belle:   "La Belle Aurore", cursive;
-  --font-badscript:  "Bad Script",      cursive;
+  --font-homemade:    "Homemade Apple",      cursive;
+  --font-marck:       "Marck Script",        cursive;
+  --font-parisienne:  "Parisienne",          cursive;
+  --font-allura:      "Allura",              cursive;
+  --font-la-belle:    "La Belle Aurore",     cursive;
+  --font-badscript:   "Bad Script",          cursive;
+  /* New cursive fonts */
+  --font-caveat:      "Caveat",              cursive;
+  --font-dancing:     "Dancing Script",      cursive;
+  --font-sacramento:  "Sacramento",          cursive;
+  --font-satisfy:     "Satisfy",             cursive;
+  --font-greatvibes:  "Great Vibes",         cursive;
+  --font-kalam:       "Kalam",               cursive;
+  --font-indie:       "Indie Flower",        cursive;
+  --font-shadows:     "Shadows Into Light",  cursive;
+  --font-patrick:     "Patrick Hand",        cursive;
+  --font-nothing:     "Nothing You Could Do",cursive;
 }
 
 /* ── Utility classes pour les polices manuscrites ── */
@@ -25,6 +36,16 @@
 .font-allura     { font-family: var(--font-allura)     !important; }
 .font-la-belle   { font-family: var(--font-la-belle)   !important; }
 .font-badscript  { font-family: var(--font-badscript)  !important; }
+.font-caveat     { font-family: var(--font-caveat)     !important; }
+.font-dancing    { font-family: var(--font-dancing)    !important; }
+.font-sacramento { font-family: var(--font-sacramento) !important; }
+.font-satisfy    { font-family: var(--font-satisfy)    !important; }
+.font-greatvibes { font-family: var(--font-greatvibes) !important; }
+.font-kalam      { font-family: var(--font-kalam)      !important; }
+.font-indie      { font-family: var(--font-indie)      !important; }
+.font-shadows    { font-family: var(--font-shadows)    !important; }
+.font-patrick    { font-family: var(--font-patrick)    !important; }
+.font-nothing    { font-family: var(--font-nothing)    !important; }
 
 /* Alias alternatifs */
 .handwriting-homemade   { font-family: var(--font-homemade);   }
@@ -33,6 +54,16 @@
 .handwriting-allura     { font-family: var(--font-allura);     }
 .handwriting-la-belle   { font-family: var(--font-la-belle);   }
 .handwriting-badscript  { font-family: var(--font-badscript);  }
+.handwriting-caveat     { font-family: var(--font-caveat);     }
+.handwriting-dancing    { font-family: var(--font-dancing);    }
+.handwriting-sacramento { font-family: var(--font-sacramento); }
+.handwriting-satisfy    { font-family: var(--font-satisfy);    }
+.handwriting-greatvibes { font-family: var(--font-greatvibes); }
+.handwriting-kalam      { font-family: var(--font-kalam);      }
+.handwriting-indie      { font-family: var(--font-indie);      }
+.handwriting-shadows    { font-family: var(--font-shadows);    }
+.handwriting-patrick    { font-family: var(--font-patrick);    }
+.handwriting-nothing    { font-family: var(--font-nothing);    }
 
 /* ── Body (interface uniquement) ── */
 body {
