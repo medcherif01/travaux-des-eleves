@@ -108,14 +108,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     parts.push({
       text:
         `Analyse ce document scolaire. Détecte TOUTES les zones où l'élève doit écrire une réponse.\n\n` +
+        `Retourne aussi la langue principale du document ("fr" pour français, "en" pour anglais, etc.).\n\n` +
         `Pour chaque zone retourne:\n` +
         `- id: identifiant unique (q1, q2, q1a, q1b...)\n` +
-        `- text: texte complet de la question\n` +
+        `- text: texte complet de la question (dans la langue du document)\n` +
         `- pageIndex: numéro de page (0 = première)\n` +
         `- x: % horizontal (5 à 15) du début de la réponse\n` +
         `- y: % vertical de LA PREMIÈRE LIGNE VIDE où écrire (après le texte de la question)\n` +
         `  Si "Réponse :" est à 40%, mettre y=40. Si lignes pointillées commencent à 35%, mettre y=35.\n\n` +
-        `Ignorer titres/objectifs/critères. Max 20 questions. JSON: {"questions":[...]}`,
+        `Ignorer titres/objectifs/critères. Max 20 questions.\n` +
+        `JSON: {"lang":"fr","questions":[...]}`,
     });
 
     const rawText = await withKeys(async (ai, round) => {
@@ -129,6 +131,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           responseSchema: {
             type: Type.OBJECT,
             properties: {
+              lang: { type: Type.STRING, description: "Main language code: 'fr', 'en', 'ar', etc." },
               questions: {
                 type: Type.ARRAY,
                 items: {
@@ -144,7 +147,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 },
               },
             },
-            required: ["questions"],
+            required: ["lang", "questions"],
           },
         },
       });
@@ -161,6 +164,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       parsed = JSON.parse(m[0]);
     }
 
+    // Extract detected language (default "fr")
+    const detectedLang = String(parsed?.lang || "fr").toLowerCase().slice(0, 2);
+
     const raw = Array.isArray(parsed?.questions) ? parsed.questions : [];
     const questions = raw
       .filter((q: any) => q && q.id && q.text)
@@ -174,7 +180,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }));
 
     if (questions.length === 0) return res.status(200).json({ success: false, error: "Aucune question détectée dans ce document." });
-    return res.status(200).json({ success: true, questions });
+    return res.status(200).json({ success: true, questions, lang: detectedLang });
   } catch (err: any) {
     console.error("detect-questions ERROR:", err?.message || err);
     return res.status(500).json({ success: false, error: String(err?.message || "Erreur serveur") });

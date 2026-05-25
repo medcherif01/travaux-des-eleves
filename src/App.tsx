@@ -57,6 +57,19 @@ interface DetectedQuestion {
 
 interface EvalPage { base64: string; pageNum: number; }
 
+// Draggable blanco / rature overlay (per student, per page)
+interface OverlayPatch {
+  id: string;
+  type: "blanco" | "rature";
+  pageIndex: number;
+  x: number;   // % of page width
+  y: number;   // % of page height
+  w: number;   // % width
+  h: number;   // % height
+  rotation: number; // degrees
+  color: string;    // rature color (ink color for rature, cream for blanco)
+}
+
 interface BatchStudent {
   id: string;
   profile: StudentProfile;
@@ -73,6 +86,8 @@ interface BatchStudent {
   artTransforms: Record<number, ArtTransform>;
   namePos: { x: number; y: number };
   effects: PageEffectOverrides;
+  // Draggable blanco/rature overlay patches
+  overlayPatches: OverlayPatch[];
 }
 
 // Grade mark draggable overlay (✓ / ✗ / note / date)
@@ -250,6 +265,7 @@ function makeBatchStudent(profile: StudentProfile, level: CriteriaLevel): BatchS
     artTransforms: {},
     namePos: { x: 55, y: 4 },
     effects: defaultEffects(),
+    overlayPatches: [],
   };
 }
 
@@ -1389,6 +1405,80 @@ function DraggableLabel({ label, x, y, fontFamily, fontSize, color, editMode, on
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// DRAGGABLE OVERLAY PATCH (blanco / rature)
+// ─────────────────────────────────────────────────────────────────────────────
+function DraggableOverlayPatch({ patch, editMode, onMove, onSelect, selected }: {
+  patch: OverlayPatch; editMode: boolean;
+  onMove: (id: string, dx: number, dy: number) => void;
+  onSelect: (id: string) => void;
+  selected: boolean;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const dragging = useRef<{ sx: number; sy: number } | null>(null);
+
+  useEffect(() => {
+    if (!editMode) return;
+    const mv = (e: MouseEvent) => {
+      if (!dragging.current || !ref.current) return;
+      const container = ref.current.parentElement;
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      const dx = ((e.clientX - dragging.current.sx) / rect.width) * 100;
+      const dy = ((e.clientY - dragging.current.sy) / rect.height) * 100;
+      dragging.current = { sx: e.clientX, sy: e.clientY };
+      onMove(patch.id, dx, dy);
+    };
+    const up = () => { dragging.current = null; };
+    window.addEventListener("mousemove", mv);
+    window.addEventListener("mouseup", up);
+    return () => { window.removeEventListener("mousemove", mv); window.removeEventListener("mouseup", up); };
+  }, [editMode, onMove, patch.id]);
+
+  const isBlanco = patch.type === "blanco";
+
+  return (
+    <div
+      ref={ref}
+      onMouseDown={e => {
+        if (!editMode) return;
+        e.stopPropagation();
+        dragging.current = { sx: e.clientX, sy: e.clientY };
+        onSelect(patch.id);
+      }}
+      style={{
+        position: "absolute",
+        left: `${patch.x}%`,
+        top: `${patch.y}%`,
+        width: `${patch.w}%`,
+        height: `${patch.h}%`,
+        background: isBlanco ? patch.color : "transparent",
+        borderBottom: isBlanco ? "none" : `${Math.max(1, patch.h * 5)}px solid ${patch.color}`,
+        borderRadius: isBlanco ? "2px" : "0",
+        opacity: isBlanco ? 0.96 : 0.9,
+        transform: `rotate(${patch.rotation}deg)`,
+        zIndex: 6,
+        cursor: editMode ? "grab" : "default",
+        userSelect: "none",
+        outline: selected && editMode ? `2px dashed ${isBlanco ? "#b45309" : "#4338ca"}` : "none",
+        outlineOffset: 2,
+        boxShadow: selected && editMode ? "0 0 0 1px rgba(99,102,241,0.3)" : "none",
+      }}
+    >
+      {editMode && (
+        <div style={{
+          position: "absolute", top: -10, left: "50%", transform: "translateX(-50%)",
+          fontSize: 7, background: isBlanco ? "rgba(180,83,9,0.85)" : "rgba(67,56,202,0.85)", color: "#fff",
+          padding: "1px 3px", borderRadius: 2, whiteSpace: "nowrap", pointerEvents: "none",
+          opacity: selected ? 1 : 0.6, transition: "opacity 0.15s",
+        }}>
+          {isBlanco ? "⬜ Blanco" : "✏️ Rature"} ✥
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // PAGE LAYER
 // ─────────────────────────────────────────────────────────────────────────────
 function PageLayer({ page, pi, questions, answers, profile, variantSeed,
@@ -1397,7 +1487,8 @@ function PageLayer({ page, pi, questions, answers, profile, variantSeed,
   onUpdateShape, selectedShapeId, onSelectShape,
   showName, namePosX, namePosY, onNameMove,
   teacherNote, onTeacherNoteMove,
-  gradeMarks, onGradeMarkMove, selectedGradeMarkId, onSelectGradeMark }: {
+  gradeMarks, onGradeMarkMove, selectedGradeMarkId, onSelectGradeMark,
+  overlayPatches, onOverlayMove, selectedOverlayId, onSelectOverlay }: {
   page: EvalPage; pi: number;
   questions: DetectedQuestion[]; answers: Record<string, string>;
   profile: StudentProfile; variantSeed: number;
@@ -1423,6 +1514,10 @@ function PageLayer({ page, pi, questions, answers, profile, variantSeed,
   onGradeMarkMove?: (id: string, dx: number, dy: number) => void;
   selectedGradeMarkId?: string | null;
   onSelectGradeMark?: (id: string) => void;
+  overlayPatches?: OverlayPatch[];
+  onOverlayMove?: (id: string, dx: number, dy: number) => void;
+  selectedOverlayId?: string | null;
+  onSelectOverlay?: (id: string) => void;
 }) {
   const filterId = `p${pi}`;
   const pageQ    = questions.filter(q => q.pageIndex === pi);
@@ -1500,6 +1595,17 @@ function PageLayer({ page, pi, questions, answers, profile, variantSeed,
           onMove={(id, dx, dy) => onGradeMarkMove?.(id, dx, dy)}
           onSelect={id => onSelectGradeMark?.(id)}
           selected={selectedGradeMarkId === m.id}
+        />
+      ))}
+      {/* Draggable blanco / rature overlay patches */}
+      {(overlayPatches ?? []).filter(op => op.pageIndex === pi).map(op => (
+        <DraggableOverlayPatch
+          key={op.id}
+          patch={op}
+          editMode={editMode && !forPrint}
+          onMove={(id, dx, dy) => onOverlayMove?.(id, dx, dy)}
+          onSelect={id => onSelectOverlay?.(id)}
+          selected={selectedOverlayId === op.id}
         />
       ))}
       {/* Draggable student name — page 0 only */}
@@ -2226,6 +2332,7 @@ export default function App() {
 
   const [batchMode, setBatchMode]         = useState(false);
   const [batchStudents, setBatchStudents] = useState<BatchStudent[]>([]);
+  const [docLang, setDocLang]             = useState<string>("fr"); // detected document language
 
   const [criteriaLevel, setCriteriaLevel] = useState<CriteriaLevel>(CriteriaLevel.LEVEL_5_6);
   const [variantSeed, setVariantSeed]     = useState(1);
@@ -2242,6 +2349,10 @@ export default function App() {
   // Student profile quick-edit modal
   const [editProfileTarget, setEditProfileTarget] = useState<StudentProfile | null>(null);
   const [activeBatchIdx, setActiveBatchIdx] = useState(0);
+  // Ref to activeBatchIdx — always holds the current value inside closures/callbacks
+  const activeBatchIdxRef = useRef(0);
+  // Keep ref in sync with state
+  useEffect(() => { activeBatchIdxRef.current = activeBatchIdx; }, [activeBatchIdx]);
 
   const [effects, setEffects]           = useState<PageEffectOverrides>(defaultEffects());
 
@@ -2272,6 +2383,10 @@ export default function App() {
   // Art image transforms (drag + resize + crop)
   const [artTransforms, setArtTransforms] = useState<Record<number, ArtTransform>>({});
 
+  // Draggable blanco / rature overlay patches (non-batch mode)
+  const [overlayPatches, setOverlayPatches] = useState<OverlayPatch[]>([]);
+  const [selectedOverlayId, setSelectedOverlayId] = useState<string | null>(null);
+
   // ─────────────────────────────────────────────────────────────────────────
   // ACTIVE STUDENT — computed first so callbacks below can read stable values
   // ─────────────────────────────────────────────────────────────────────────
@@ -2286,28 +2401,32 @@ export default function App() {
   const activeArtImages     = batchMode ? (currentBatch?.artImages     ?? {})               : artImages;
   const activeArtTransforms = batchMode ? (currentBatch?.artTransforms ?? {})               : artTransforms;
   const activeNamePos       = batchMode ? (currentBatch?.namePos       ?? { x: 55, y: 4 }) : namePos;
-  const activeEffects       = batchMode ? (currentBatch?.effects       ?? defaultEffects()) : effects;
+  const activeEffects         = batchMode ? (currentBatch?.effects         ?? defaultEffects()) : effects;
+  const activeOverlayPatches  = batchMode ? (currentBatch?.overlayPatches  ?? [])               : overlayPatches;
 
-  // ── Batch-aware setters — use activeBatchIdx (primitive) as dep, never currentBatch ──
-  // patchBatch: applique un patch uniquement sur l'élève courant (par index, pas par id)
-  // Utilise la forme fonctionnelle de setBatchStudents pour toujours lire le state frais.
+  // ── Batch-aware patcher — lit toujours l'index depuis activeBatchIdxRef ──────
+  // Garantit que même les callbacks mémorisés anciens patchent le bon élève.
+  // Ne dépend d'aucun state volatile : stable à vie, jamais recréé.
   const patchCurrentBatch = useCallback(<K extends keyof BatchStudent>(
     key: K,
     updater: BatchStudent[K] | ((prev: BatchStudent[K]) => BatchStudent[K]),
   ) => {
     setBatchStudents(prev => {
-      const idx = activeBatchIdx;
+      // Lire l'index depuis le ref — TOUJOURS à jour, même si le callback est ancien
+      const idx = activeBatchIdxRef.current;
       if (idx < 0 || idx >= prev.length) return prev;
       const b = prev[idx];
       const next = typeof updater === "function"
         ? (updater as (p: BatchStudent[K]) => BatchStudent[K])(b[key])
         : updater;
-      if (next === b[key]) return prev; // rien n'a changé
+      // Comparaison stricte pour éviter re-renders inutiles
+      if (next === b[key]) return prev;
       const arr = [...prev];
       arr[idx] = { ...b, [key]: next };
       return arr;
     });
-  }, [activeBatchIdx]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // stable à vie — lit toujours activeBatchIdxRef.current depuis le ref
 
   const setActiveTeacherNote = useCallback((updater: TeacherNote | null | ((prev: TeacherNote | null) => TeacherNote | null)) => {
     if (batchMode) {
@@ -2397,6 +2516,44 @@ export default function App() {
     } else {
       setGradeMarks(prev => prev.filter(m => m.id !== id));
     }
+  }, [batchMode, patchCurrentBatch]);
+
+  // ── Overlay patch helpers (blanco / rature) ───────────────────────────────
+  const addOverlayPatch = useCallback((type: OverlayPatch["type"], pageIndex: number, inkColor?: string) => {
+    const newPatch: OverlayPatch = {
+      id: `op_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      type, pageIndex,
+      x: 20, y: 40,
+      w: type === "blanco" ? 12 : 8,
+      h: type === "blanco" ? 2.5 : 0.5,
+      rotation: (Math.random() - 0.5) * 3,
+      color: type === "blanco" ? "#f3eedd" : (inkColor || "#1d3278"),
+    };
+    if (batchMode) {
+      patchCurrentBatch("overlayPatches", prev => [...(prev as OverlayPatch[]), newPatch]);
+    } else {
+      setOverlayPatches(prev => [...prev, newPatch]);
+    }
+    setSelectedOverlayId(newPatch.id);
+  }, [batchMode, patchCurrentBatch]);
+
+  const updateOverlayPatch = useCallback((id: string, patch: Partial<OverlayPatch>) => {
+    if (batchMode) {
+      patchCurrentBatch("overlayPatches", prev =>
+        (prev as OverlayPatch[]).map(op => op.id === id ? { ...op, ...patch } : op));
+    } else {
+      setOverlayPatches(prev => prev.map(op => op.id === id ? { ...op, ...patch } : op));
+    }
+  }, [batchMode, patchCurrentBatch]);
+
+  const deleteOverlayPatch = useCallback((id: string) => {
+    if (batchMode) {
+      patchCurrentBatch("overlayPatches", prev =>
+        (prev as OverlayPatch[]).filter(op => op.id !== id));
+    } else {
+      setOverlayPatches(prev => prev.filter(op => op.id !== id));
+    }
+    setSelectedOverlayId(null);
   }, [batchMode, patchCurrentBatch]);
 
   // ── On startup: clear bloated localStorage (old versions stored full base64 images) ──
@@ -2740,6 +2897,10 @@ export default function App() {
       const d = await r.json();
       if (d.success && d.questions?.length) {
         setQuestions(d.questions);
+        // Save detected language (fr / en / ar …)
+        if (d.lang && typeof d.lang === "string") {
+          setDocLang(d.lang.toLowerCase().slice(0, 2));
+        }
         setDetectErr("");
         setStep("grade");
       } else {
@@ -2777,6 +2938,7 @@ export default function App() {
           variantSeed,
           pdfPagesBase64: evalPages.map(p => p.base64),
           saveSession: attempt === 1, // only save on first attempt
+          lang: docLang,
         }),
       });
       clearTimeout(timer);
@@ -2897,6 +3059,7 @@ export default function App() {
         body: JSON.stringify({
           questions, criteriaLevel: bs.criteriaLevel, studentName: bs.profile.name,
           variantSeed: seed, pdfPagesBase64: evalPages.map(p => p.base64), saveSession: true,
+          lang: docLang,
         }),
       });
       const d = await r.json();
@@ -2930,7 +3093,7 @@ export default function App() {
     try {
       const r = await fetch("/api/generate-comments", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ questions, answers: activeAnswers, criteriaLevel, studentName: activeDisplayProfile.name }),
+        body: JSON.stringify({ questions, answers: activeAnswers, criteriaLevel, studentName: activeDisplayProfile.name, lang: docLang }),
       });
       const d = await r.json();
       if (d.success && d.comments) {
@@ -2953,43 +3116,28 @@ export default function App() {
     setIsGenComments(false);
   };
 
-  // ── Generate teacher evaluation note ─────────────────────────────────────
+  // ── Generate teacher evaluation note (via dedicated endpoint) ────────────
   const generateTeacherNote = async () => {
     setIsGenNote(true); setGenNoteErr("");
     try {
-      // Build a rich context-aware prompt using actual student answers + grading grid (page 1)
-      const answersSummary = Object.entries(activeAnswers)
-        .map(([qId, ans]) => {
-          const q = questions.find(x => x.id === qId);
-          return q ? `Q: ${q.text}\nRéponse: ${ans}` : `Q(${qId}): ${ans}`;
-        })
-        .join("\n\n");
-
-      const promptText = `Tu es un enseignant bienveillant et précis. Rédige un commentaire d'évaluation en 2-3 phrases pour l'élève "${activeDisplayProfile.name}" qui a obtenu le niveau ${criteriaLevel}/8.
-
-${answersSummary ? `Voici les réponses de l'élève :\n${answersSummary}\n\n` : ""}Appuie-toi sur la grille de notation visible dans l'image (page 1) pour justifier ce niveau. Sois pédagogique, bienveillant et précis. Texte brut uniquement, sans markdown ni puces.`;
-
-      const summaryQ = [{ id: "teacher_note", text: promptText }];
-
       // Include page 1 (grading grid) as image context if available
       const page1Base64 = evalPages.length > 0 ? evalPages[0].base64 : "";
 
-      const r = await fetch("/api/generate-answers", {
+      const r = await fetch("/api/generate-teacher-note", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          questions: summaryQ,
-          criteriaLevel,
           studentName: activeDisplayProfile.name,
-          variantSeed: Date.now() % 1000,
-          pdfPagesBase64: page1Base64 ? [page1Base64] : [],
-          saveSession: false,
+          criteriaLevel,
+          answers: activeAnswers,
+          questions: questions.map(q => ({ id: q.id, text: q.text })),
+          page1Base64,
+          lang: docLang,
         }),
       });
       const d = await r.json();
-      const noteText = d?.answers?.teacher_note || d?.answers?.[Object.keys(d?.answers ?? {})[0]] || "";
-      if (noteText) {
+      if (d.success && d.text) {
         setActiveTeacherNote({
-          text: noteText,
+          text: d.text,
           x: 5, y: 88,
           color: DEFAULT_TEACHER_COLOR,
           fontKey: DEFAULT_TEACHER_FONT,
@@ -4133,6 +4281,13 @@ ${answersSummary ? `Voici les réponses de l'élève :\n${answersSummary}\n\n` :
                         ...prev,
                         [previewPage]: { ...(prev[previewPage] ?? { x: 0, y: 0, w: 100, h: 100, cropX: 0, cropY: 0, cropW: 100, cropH: 100, rotation: 0 }), ...patch },
                       }))}
+                      overlayPatches={activeOverlayPatches}
+                      onOverlayMove={(id, dx, dy) => updateOverlayPatch(id, {
+                        x: Math.max(0, Math.min(95, (activeOverlayPatches.find(op => op.id === id)?.x ?? 0) + dx)),
+                        y: Math.max(0, Math.min(95, (activeOverlayPatches.find(op => op.id === id)?.y ?? 0) + dy)),
+                      })}
+                      selectedOverlayId={selectedOverlayId}
+                      onSelectOverlay={setSelectedOverlayId}
                     />
                   </div>
 
@@ -4218,6 +4373,48 @@ ${answersSummary ? `Voici les réponses de l'élève :\n${answersSummary}\n\n` :
                               className="w-full py-1.5 border border-slate-200 rounded-lg text-[10px] font-semibold text-slate-500 hover:bg-slate-50 transition mt-1">
                               Tout activer
                             </button>
+
+                            {/* ── Draggable Blanco / Rature overlays ─────────── */}
+                            <div className="border-t border-slate-100 pt-2 space-y-2">
+                              <p className="text-[9px] font-bold text-indigo-500 uppercase tracking-wide">✏️ Blanco / Ratures libres</p>
+                              <p className="text-[8px] text-slate-400">Indépendant par élève · Mode Déplacer pour glisser</p>
+                              <div className="grid grid-cols-2 gap-1.5">
+                                <button onClick={() => addOverlayPatch("blanco", previewPage, activeDisplayProfile.inkColor)}
+                                  className="py-2 border border-amber-300 bg-amber-50 text-amber-800 rounded-xl text-[10px] font-bold hover:bg-amber-100 transition active:scale-95">
+                                  ⬜ + Blanco
+                                </button>
+                                <button onClick={() => addOverlayPatch("rature", previewPage, activeDisplayProfile.inkColor)}
+                                  className="py-2 border border-slate-300 bg-slate-50 text-slate-700 rounded-xl text-[10px] font-bold hover:bg-slate-100 transition active:scale-95">
+                                  ✏️ + Rature
+                                </button>
+                              </div>
+                              {/* List of overlays on current page */}
+                              {activeOverlayPatches.filter(op => op.pageIndex === previewPage).length > 0 && (
+                                <div className="space-y-1 max-h-40 overflow-y-auto">
+                                  {activeOverlayPatches.filter(op => op.pageIndex === previewPage).map(op => (
+                                    <div key={op.id}
+                                      onClick={() => setSelectedOverlayId(selectedOverlayId === op.id ? null : op.id)}
+                                      className={`flex items-center gap-1.5 p-1.5 rounded-lg border cursor-pointer transition text-[9px]
+                                        ${selectedOverlayId === op.id ? "border-indigo-400 bg-indigo-50" : "border-slate-200 bg-white hover:border-slate-300"}`}>
+                                      <span>{op.type === "blanco" ? "⬜" : "✏️"}</span>
+                                      <span className="flex-1 font-semibold text-slate-600">{op.type === "blanco" ? "Blanco" : "Rature"}</span>
+                                      <span className="text-slate-400">x:{op.x.toFixed(0)}% y:{op.y.toFixed(0)}%</span>
+                                      {selectedOverlayId === op.id && (
+                                        <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
+                                          <input type="range" min={1} max={30} step={0.5} value={op.w}
+                                            onChange={e => updateOverlayPatch(op.id, { w: parseFloat(e.target.value) })}
+                                            className="w-12 accent-indigo-500 h-1" title="Largeur" />
+                                        </div>
+                                      )}
+                                      <button onClick={e => { e.stopPropagation(); deleteOverlayPatch(op.id); }}
+                                        className="p-0.5 rounded hover:bg-red-50 transition shrink-0">
+                                        <Trash2 className="h-2.5 w-2.5 text-red-400" />
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
                           </div>
                         )}
 

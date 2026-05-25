@@ -39,11 +39,19 @@ async function withKeys<T>(fn: (ai: GoogleGenAI) => Promise<T>): Promise<T> {
 }
 // ─────────────────────────────────────────────────────────────────────────────
 
-const TEACHER_STYLE: Record<string, string> = {
-  "1-2": "Professeur sévère: 'Faux!', 'Incomplet', 'À revoir', 'Manque de détails', 'Erreur de calcul', X.",
-  "3-4": "Professeur normal: 'Peut mieux faire', 'Incomplet', 'Bien mais...', 'Revoir la formule'.",
-  "5-6": "Professeur bienveillant: 'Bien!', 'Correct', 'Bonne approche', 'Ajouter les unités', ✓.",
-  "7-8": "Professeur très satisfait: 'Excellent!', 'Parfait', 'Très bien développé', 'Bravo', ✓✓.",
+const TEACHER_STYLE: Record<string, Record<string, string>> = {
+  fr: {
+    "1-2": "Professeur sévère: 'Faux!', 'Incomplet', 'À revoir', 'Manque de détails', 'Erreur de calcul', X.",
+    "3-4": "Professeur normal: 'Peut mieux faire', 'Incomplet', 'Bien mais...', 'Revoir la formule'.",
+    "5-6": "Professeur bienveillant: 'Bien!', 'Correct', 'Bonne approche', 'Ajouter les unités', ✓.",
+    "7-8": "Professeur très satisfait: 'Excellent!', 'Parfait', 'Très bien développé', 'Bravo', ✓✓.",
+  },
+  en: {
+    "1-2": "Strict teacher: 'Wrong!', 'Incomplete', 'Redo this', 'Missing details', 'Calculation error', X.",
+    "3-4": "Normal teacher: 'Could do better', 'Incomplete', 'Good but...', 'Review the formula'.",
+    "5-6": "Supportive teacher: 'Good!', 'Correct', 'Good approach', 'Add units', ✓.",
+    "7-8": "Very satisfied teacher: 'Excellent!', 'Perfect', 'Very well developed', 'Bravo', ✓✓.",
+  },
 };
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -54,16 +62,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "POST")
     return res.status(405).json({ success: false, error: "Méthode non autorisée." });
 
-  const { questions, answers, criteriaLevel, studentName } = req.body || {};
+  const { questions, answers, criteriaLevel, studentName, lang: rawLang } = req.body || {};
   if (!questions || !answers) {
     return res.status(400).json({ success: false, error: "Questions et réponses requises." });
   }
 
   const level = String(criteriaLevel || "5-6");
-  const teacherStyle = TEACHER_STYLE[level] || TEACHER_STYLE["5-6"];
+  const lang_ = String(rawLang || "fr").toLowerCase().startsWith("en") ? "en" : "fr";
+  const teacherStyleMap = TEACHER_STYLE[lang_] || TEACHER_STYLE["fr"];
+  const teacherStyle = teacherStyleMap[level] || teacherStyleMap["5-6"];
 
   if (!getGeminiKeys().length) {
-    return res.status(200).json({ success: true, comments: buildFallbackComments(questions, answers, level), offline: true });
+    return res.status(200).json({ success: true, comments: buildFallbackComments(questions, answers, level, lang_), offline: true });
   }
 
   try {
@@ -71,18 +81,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       id: q.id, question: q.text, answer: answers[q.id] || "(pas de réponse)",
     }));
 
+    const isEn = lang_ === "en";
     const rawText = await withKeys(async (ai) => {
+      const promptText = isEn
+        ? `You are an English teacher marking the work of "${studentName || "the student"}". Level: ${level}/8. Style: ${teacherStyle}\n\nFor each question/answer, generate ONE short teacher comment (2-8 words max), in natural English.\nSometimes just a symbol (✓ or X or ?).\n\n` +
+          qa.map((q: any, i: number) => `Q${i+1} [${q.id}]: "${q.question}"\nAnswer: "${q.answer}"`).join("\n\n") +
+          `\n\nReturn JSON with comment and position for each question.`
+        : `Tu es un professeur français qui corrige le devoir de "${studentName || "l'élève"}".\nNiveau: ${level}/8. Style: ${teacherStyle}\n\nPour chaque question/réponse, génère UN commentaire court (2-8 mots max), en français naturel d'enseignant.\nParfois juste un symbole (✓ ou X ou ?).\n\n` +
+          qa.map((q: any, i: number) => `Q${i+1} [${q.id}]: "${q.question}"\nRéponse: "${q.answer}"`).join("\n\n") +
+          `\n\nRetourne JSON avec commentaire et position pour chaque question.`;
       const response = await ai.models.generateContent({
         model: "gemini-2.5-flash",
-        contents: [{
-          text:
-            `Tu es un professeur français qui corrige le devoir de "${studentName || "l'élève"}".\n` +
-            `Niveau: ${level}/8. Style: ${teacherStyle}\n\n` +
-            `Pour chaque question/réponse, génère UN commentaire court (2-8 mots max), en français naturel d'enseignant.\n` +
-            `Parfois juste un symbole (✓ ou X ou ?).\n\n` +
-            qa.map((q: any, i: number) => `Q${i+1} [${q.id}]: "${q.question}"\nRéponse: "${q.answer}"`).join("\n\n") +
-            `\n\nRetourne JSON avec commentaire et position pour chaque question.`,
-        }],
+        contents: [{ text: promptText }],
         config: {
           responseMimeType: "application/json",
           responseSchema: {
@@ -129,22 +139,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json({ success: true, comments: commentsMap });
   } catch (err: any) {
     console.error("generate-comments:", err.message);
-    return res.status(200).json({ success: true, comments: buildFallbackComments(questions, answers, level), offline: true });
+    return res.status(200).json({ success: true, comments: buildFallbackComments(questions, answers, level, lang_), offline: true });
   }
 }
 
 function buildFallbackComments(
   questions: any[],
   answers: Record<string, string>,
-  level: string
+  level: string,
+  lang = "fr"
 ): Record<string, { text: string; symbol?: string; position: string; style?: string }> {
-  const byLevel: Record<string, string[]> = {
-    "1-2": ["Faux!", "À revoir", "Incomplet", "Erreur!", "?", "Non"],
-    "3-4": ["Peut mieux faire", "Incomplet", "Revoir", "Bien mais...", "?"],
-    "5-6": ["Bien!", "Correct ✓", "Bonne approche", "Ok", "✓"],
-    "7-8": ["Excellent!", "Parfait ✓", "Très bien", "Bravo!", "✓✓"],
+  const byLevel: Record<string, Record<string, string[]>> = {
+    fr: {
+      "1-2": ["Faux!", "À revoir", "Incomplet", "Erreur!", "?", "Non"],
+      "3-4": ["Peut mieux faire", "Incomplet", "Revoir", "Bien mais...", "?"],
+      "5-6": ["Bien!", "Correct ✓", "Bonne approche", "Ok", "✓"],
+      "7-8": ["Excellent!", "Parfait ✓", "Très bien", "Bravo!", "✓✓"],
+    },
+    en: {
+      "1-2": ["Wrong!", "Redo this", "Incomplete", "Error!", "?", "No"],
+      "3-4": ["Could do better", "Incomplete", "Review", "Good but...", "?"],
+      "5-6": ["Good!", "Correct ✓", "Good approach", "Ok", "✓"],
+      "7-8": ["Excellent!", "Perfect ✓", "Very good", "Bravo!", "✓✓"],
+    },
   };
-  const texts = byLevel[level] || byLevel["5-6"];
+  const langMap = byLevel[lang.startsWith("en") ? "en" : "fr"] || byLevel["fr"];
+  const texts = langMap[level] || langMap["5-6"];
   const positions = ["right", "above", "margin", "below"];
   const result: Record<string, { text: string; position: string }> = {};
   (questions as any[]).forEach((q: any, i: number) => {

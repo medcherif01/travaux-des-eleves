@@ -252,11 +252,19 @@ function countValid(answers: Record<string, string>): number {
 
 // ── Prompt builder ────────────────────────────────────────────────────────────
 
-const LEVEL_DESC: Record<string, string> = {
-  "1-2": "Niveau LIMITÉ (1-2/8): Réponses très courtes, quelques erreurs, vocabulaire basique.",
-  "3-4": "Niveau RUDIMENTAIRE (3-4/8): Réponses correctes mais incomplètes, manque de rigueur.",
-  "5-6": "Niveau SATISFAISANT (5-6/8): Réponses précises, calculs corrects, termes scientifiques.",
-  "7-8": "Niveau EXCELLENT (7-8/8): Justifications complètes, calculs détaillés, analyse critique.",
+const LEVEL_DESC: Record<string, Record<string, string>> = {
+  fr: {
+    "1-2": "Niveau LIMITÉ (1-2/8): Réponses très courtes, quelques erreurs, vocabulaire basique.",
+    "3-4": "Niveau RUDIMENTAIRE (3-4/8): Réponses correctes mais incomplètes, manque de rigueur.",
+    "5-6": "Niveau SATISFAISANT (5-6/8): Réponses précises, calculs corrects, termes appropriés.",
+    "7-8": "Niveau EXCELLENT (7-8/8): Justifications complètes, calculs détaillés, analyse critique.",
+  },
+  en: {
+    "1-2": "LIMITED level (1-2/8): Very short answers, some errors, basic vocabulary.",
+    "3-4": "BASIC level (3-4/8): Correct but incomplete answers, lacks rigour.",
+    "5-6": "SATISFACTORY level (5-6/8): Precise answers, correct calculations, appropriate terms.",
+    "7-8": "EXCELLENT level (7-8/8): Complete justifications, detailed workings, critical analysis.",
+  },
 };
 
 function buildPromptParts(
@@ -264,7 +272,8 @@ function buildPromptParts(
   name: string,
   seed: number,
   level: string,
-  pdfPagesBase64: string[]
+  pdfPagesBase64: string[],
+  lang = "fr"
 ): unknown[] {
   const parts: unknown[] = [];
 
@@ -280,29 +289,51 @@ function buildPromptParts(
     });
   }
 
-  const levelDesc = LEVEL_DESC[level] || LEVEL_DESC["5-6"];
+  const isEn = lang.startsWith("en");
+  const levelDescs = LEVEL_DESC[isEn ? "en" : "fr"];
+  const levelDesc = levelDescs[level] || levelDescs["5-6"];
   const ids       = questions.map(q => `"${q.id}"`).join(", ");
   const qLines    = questions
-    .map((q, i) => `  [${i + 1}] CLE="${q.id}" | QUESTION: "${q.text}"`)
+    .map((q, i) => `  [${i + 1}] KEY="${q.id}" | QUESTION: "${q.text}"`)
     .join("\n");
 
-  parts.push({
-    text:
-      `Tu joues le rôle de l'élève "${name}" (variante ${seed}).\n\n` +
-      `${levelDesc}\n\n` +
-      `RÈGLES ABSOLUES:\n` +
-      `1. Réponses UNIQUES propres à "${name}" (variante ${seed})\n` +
-      `2. AUCUN markdown — texte brut uniquement\n` +
-      `3. Français uniquement, style naturel d'élève\n` +
-      `4. Réponds à TOUTES les ${questions.length} questions\n\n` +
-      `QUESTIONS (utilise les CLÉs exactes dans le JSON):\n${qLines}\n\n` +
-      `⚠️ CRITIQUE: Dans le JSON retourné, les clés DOIVENT ÊTRE EXACTEMENT: ${ids}\n` +
-      `Exemple de format attendu:\n` +
-      `{\n  "answers": {\n` +
-      questions.slice(0, 2).map(q => `    "${q.id}": "ta réponse ici"`).join(",\n") +
-      `\n  }\n}\n\n` +
-      `Retourne uniquement ce JSON. Aucun texte avant ou après.`,
-  });
+  if (isEn) {
+    parts.push({
+      text:
+        `You are playing the role of student "${name}" (variant ${seed}).\n\n` +
+        `${levelDesc}\n\n` +
+        `ABSOLUTE RULES:\n` +
+        `1. UNIQUE answers specific to "${name}" (variant ${seed})\n` +
+        `2. NO markdown — plain text only\n` +
+        `3. Answer in ENGLISH only, natural student style\n` +
+        `4. Answer ALL ${questions.length} questions\n\n` +
+        `QUESTIONS (use the exact KEYS in the JSON):\n${qLines}\n\n` +
+        `⚠️ CRITICAL: In the returned JSON, keys MUST BE EXACTLY: ${ids}\n` +
+        `Expected format:\n` +
+        `{\n  "answers": {\n` +
+        questions.slice(0, 2).map(q => `    "${q.id}": "your answer here"`).join(",\n") +
+        `\n  }\n}\n\n` +
+        `Return only this JSON. No text before or after.`,
+    });
+  } else {
+    parts.push({
+      text:
+        `Tu joues le rôle de l'élève "${name}" (variante ${seed}).\n\n` +
+        `${levelDesc}\n\n` +
+        `RÈGLES ABSOLUES:\n` +
+        `1. Réponses UNIQUES propres à "${name}" (variante ${seed})\n` +
+        `2. AUCUN markdown — texte brut uniquement\n` +
+        `3. Réponses en FRANÇAIS uniquement, style naturel d'élève\n` +
+        `4. Réponds à TOUTES les ${questions.length} questions\n\n` +
+        `QUESTIONS (utilise les CLÉs exactes dans le JSON):\n${qLines}\n\n` +
+        `⚠️ CRITIQUE: Dans le JSON retourné, les clés DOIVENT ÊTRE EXACTEMENT: ${ids}\n` +
+        `Exemple de format attendu:\n` +
+        `{\n  "answers": {\n` +
+        questions.slice(0, 2).map(q => `    "${q.id}": "ta réponse ici"`).join(",\n") +
+        `\n  }\n}\n\n` +
+        `Retourne uniquement ce JSON. Aucun texte avant ou après.`,
+    });
+  }
 
   return parts;
 }
@@ -314,11 +345,12 @@ async function pass1Structured(
   name: string,
   seed: number,
   level: string,
-  pdfPagesBase64: string[]
+  pdfPagesBase64: string[],
+  lang = "fr"
 ): Promise<Record<string, string> | null> {
   console.log("[Pass-1] Démarrage génération structurée");
 
-  const parts = buildPromptParts(questions, name, seed, level, pdfPagesBase64);
+  const parts = buildPromptParts(questions, name, seed, level, pdfPagesBase64, lang);
 
   const rawText = await withKeys(async (ai, ki, round) => {
     const model = round >= 3 ? "gemini-1.5-flash" : "gemini-2.5-flash";
@@ -399,11 +431,12 @@ async function pass2PlainText(
   name: string,
   seed: number,
   level: string,
-  pdfPagesBase64: string[]
+  pdfPagesBase64: string[],
+  lang = "fr"
 ): Promise<Record<string, string> | null> {
   console.log("[Pass-2] Démarrage génération texte libre (sans schema)");
 
-  const parts = buildPromptParts(questions, name, seed, level, pdfPagesBase64);
+  const parts = buildPromptParts(questions, name, seed, level, pdfPagesBase64, lang);
 
   const rawText = await withKeys(async (ai, ki, round) => {
     const model = round >= 3 ? "gemini-1.5-flash" : "gemini-2.5-flash";
@@ -504,11 +537,14 @@ async function pass3PerQuestion(
   name: string,
   seed: number,
   level: string,
-  pdfPagesBase64: string[]
+  pdfPagesBase64: string[],
+  lang = "fr"
 ): Promise<Record<string, string> | null> {
   console.log("[Pass-3] Démarrage appels par question (fallback nucléaire)");
 
-  const levelDesc = LEVEL_DESC[level] || LEVEL_DESC["5-6"];
+  const isEn = lang.startsWith("en");
+  const levelDescs = LEVEL_DESC[isEn ? "en" : "fr"];
+  const levelDesc = levelDescs[level] || levelDescs["5-6"];
   const result: Record<string, string> = {};
 
   // Only attach first page image for per-question calls (keep payload small)
@@ -532,17 +568,14 @@ async function pass3PerQuestion(
     try {
       const text = await withKeys(async (ai, ki, round) => {
         const model = round >= 3 ? "gemini-1.5-flash" : "gemini-2.5-flash";
+        const promptText = isEn
+          ? `You are playing the role of student "${name}" (variant ${seed}). ${levelDesc}\nAnswer ONLY this question in plain text (no markdown), in ENGLISH:\n"${q.text}"\nAnswer as a real student would write by hand. Direct answer, no preamble.`
+          : `Tu joues le rôle de l'élève "${name}" (variante ${seed}). ${levelDesc}\nRéponds UNIQUEMENT à cette question en texte brut (pas de markdown), en FRANÇAIS:\n"${q.text}"\nRéponds comme un vrai élève écrirait à la main. Réponse directe sans préambule.`;
         const response = await ai.models.generateContent({
           model,
           contents: [
             ...imageParts,
-            {
-              text:
-                `Tu joues le rôle de l'élève "${name}" (variante ${seed}). ${levelDesc}\n` +
-                `Réponds UNIQUEMENT à cette question en texte brut (pas de markdown):\n` +
-                `"${q.text}"\n` +
-                `Réponds comme un vrai élève écrirait à la main. Réponse directe sans préambule.`,
-            },
+            { text: promptText },
           ] as any[],
         });
         return response.text ?? "";
@@ -653,6 +686,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     variantSeed,
     pdfPagesBase64,
     saveSession,
+    lang: rawLang,
   } = req.body || {};
 
   // ── Input validation ───────────────────────────────────────────────────────
@@ -677,8 +711,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const seed  = Math.max(1, Number(variantSeed || 1));
   const name  = String(studentName || "Élève").trim() || "Élève";
   const pages = Array.isArray(pdfPagesBase64) ? pdfPagesBase64.map(String) : [];
+  const lang  = String(rawLang || "fr").toLowerCase().slice(0, 2);
 
-  console.log(`\n[generate-answers] START — ${questions.length} questions, élève="${name}", niveau=${level}, seed=${seed}`);
+  console.log(`\n[generate-answers] START — ${questions.length} questions, élève="${name}", niveau=${level}, seed=${seed}, lang=${lang}`);
   console.log("[generate-answers] Question IDs:", questions.map(q => q.id));
 
   // ── Demo mode ──────────────────────────────────────────────────────────────
@@ -693,7 +728,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   let answers: Record<string, string> | null = null;
 
   try {
-    answers = await pass1Structured(questions, name, seed, level, pages);
+    answers = await pass1Structured(questions, name, seed, level, pages, lang);
     if (answers && countValid(answers) > 0) {
       console.log(`[generate-answers] Pass-1 réussit: ${countValid(answers)} réponses`);
     } else {
@@ -708,7 +743,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // ── Pass 2: plain-text (no schema) ────────────────────────────────────────
   if (!answers) {
     try {
-      answers = await pass2PlainText(questions, name, seed, level, pages);
+      answers = await pass2PlainText(questions, name, seed, level, pages, lang);
       if (answers && countValid(answers) > 0) {
         console.log(`[generate-answers] Pass-2 réussit: ${countValid(answers)} réponses`);
       } else {
@@ -724,7 +759,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // ── Pass 3: per-question nuclear fallback ─────────────────────────────────
   if (!answers) {
     try {
-      answers = await pass3PerQuestion(questions, name, seed, level, pages);
+      answers = await pass3PerQuestion(questions, name, seed, level, pages, lang);
       if (answers && countValid(answers) > 0) {
         console.log(`[generate-answers] Pass-3 réussit: ${countValid(answers)} réponses`);
       } else {
