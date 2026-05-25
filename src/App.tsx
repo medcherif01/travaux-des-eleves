@@ -1978,10 +1978,14 @@ function StudentProfileModal({
   isAnalyzing: boolean;
   analyzeHandwriting: (b64: string, name: string) => void;
 }) {
-  const [local, setLocal] = React.useState<StudentProfile>({ ...profile });
+  // Merge with defaults to ensure no field is undefined (handles old profiles)
+  const def = defaultProfile(profile.name);
+  const [local, setLocal] = React.useState<StudentProfile>({ ...def, ...profile });
   const upd = <K extends keyof StudentProfile>(k: K, v: StudentProfile[K]) =>
     setLocal(prev => ({ ...prev, [k]: v }));
-  const [fontCat, setFontCat] = React.useState<string>("enfant");
+  // Start on the tab that contains the current font
+  const initialCat = HANDWRITING_FONTS.find(f => f.key === profile.fontKey)?.category ?? "enfant";
+  const [fontCat, setFontCat] = React.useState<string>(initialCat);
 
   const fontsInCat = HANDWRITING_FONTS.filter(f => f.category === fontCat);
 
@@ -2104,10 +2108,10 @@ function StudentProfileModal({
                   <span className="text-sm w-5 text-center shrink-0">{s.icon}</span>
                   <span className="text-[10px] font-semibold text-slate-500 w-28 shrink-0">{s.label}</span>
                   <input type="range" min={s.min} max={s.max} step={s.step}
-                    value={local[s.k] as number}
+                    value={(local[s.k] as number) ?? s.min}
                     onChange={e => upd(s.k, parseFloat(e.target.value))}
                     className="flex-1 accent-indigo-500 h-1.5 rounded" />
-                  <span className="text-[10px] font-black text-indigo-700 w-8 text-right shrink-0">{(local[s.k] as number).toFixed(1)}</span>
+                  <span className="text-[10px] font-black text-indigo-700 w-8 text-right shrink-0">{((local[s.k] as number) ?? 0).toFixed(1)}</span>
                 </div>
               ))}
             </div>
@@ -2143,7 +2147,7 @@ function StudentProfileModal({
                   </div>
                   {s.sub && local[s.k] && (
                     <input type="range" min={s.min} max={s.max} step={0.005}
-                      value={local[s.sub] as number}
+                      value={(local[s.sub] as number) ?? s.min}
                       onClick={e => e.stopPropagation()}
                       onChange={e => { e.stopPropagation(); upd(s.sub!, parseFloat(e.target.value)); }}
                       className="w-full mt-1.5 accent-indigo-400 h-1 rounded" />
