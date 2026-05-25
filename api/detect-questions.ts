@@ -4,7 +4,11 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 // ── Inline key rotation (Vercel cannot import from sibling api/ files) ────────
 function getGeminiKeys(): string[] {
   const keys: string[] = [];
-  for (const name of ["GEMINI_API_KEY_1","GEMINI_API_KEY_2","GEMINI_API_KEY_3","GEMINI_API_KEY_4","GEMINI_API_KEY","GEMINI_KEY"]) {
+  for (const name of [
+    "GEMINI_API_KEY_1","GEMINI_API_KEY_2","GEMINI_API_KEY_3","GEMINI_API_KEY_4",
+    "GEMINI_API_KEY_5","GEMINI_API_KEY_6","GEMINI_API_KEY_7","GEMINI_API_KEY_8",
+    "GEMINI_API_KEY_9","GEMINI_API_KEY_10","GEMINI_API_KEY","GEMINI_KEY",
+  ]) {
     const v = process.env[name];
     if (v && v !== "MY_GEMINI_API_KEY" && v.length > 10) keys.push(v);
   }
@@ -14,19 +18,28 @@ function isQuota(err: any): boolean {
   const msg = String(err?.message || err?.status || err || "").toLowerCase();
   return msg.includes("429") || msg.includes("quota") || msg.includes("resource_exhausted") || msg.includes("rate limit") || err?.status === 429;
 }
+const MAX_ROUNDS_DQ = 3;
 async function withKeys<T>(fn: (ai: GoogleGenAI) => Promise<T>): Promise<T> {
   const keys = getGeminiKeys();
   if (!keys.length) throw new Error("Aucune clé Gemini configurée.");
   let last: any;
-  for (let i = 0; i < keys.length; i++) {
+  const total = keys.length * MAX_ROUNDS_DQ;
+  for (let attempt = 0; attempt < total; attempt++) {
+    const i = attempt % keys.length;
+    const round = Math.floor(attempt / keys.length) + 1;
     try {
       return await fn(new GoogleGenAI({ apiKey: keys[i], httpOptions: { headers: { "User-Agent": "aistudio-build" } } }));
     } catch (e: any) {
-      if (isQuota(e)) { console.warn(`Gemini key #${i+1} quota → next`); last = e; continue; }
+      if (isQuota(e)) {
+        console.warn(`Gemini key #${i+1} quota (round ${round}) → next`);
+        last = e;
+        if (i === keys.length - 1 && round < MAX_ROUNDS_DQ) await new Promise(r => setTimeout(r, 1500 * round));
+        continue;
+      }
       throw e;
     }
   }
-  throw new Error(`All Gemini keys exhausted. Last: ${last?.message}`);
+  throw new Error(`All ${keys.length} Gemini keys exhausted (${MAX_ROUNDS_DQ} rounds). Last: ${last?.message}`);
 }
 // ─────────────────────────────────────────────────────────────────────────────
 

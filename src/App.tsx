@@ -67,6 +67,26 @@ interface BatchStudent {
   isDone: boolean;
 }
 
+// Grade mark draggable overlay (✓ / ✗ / note / date)
+interface GradeMark {
+  id: string;
+  pageIndex: number;
+  type: "check" | "cross" | "grade" | "date" | "custom";
+  text: string;       // "✓" / "✗" / "7/8" / "15/05/2025" / custom
+  x: number;         // % of page
+  y: number;
+  fontSize: number;  // rem-like units (2 = ~14px)
+  color: string;
+}
+
+// Art image with transform (drag + resize + crop)
+interface ArtTransform {
+  x: number; y: number;       // % position
+  w: number; h: number;       // % size
+  cropX: number; cropY: number; cropW: number; cropH: number; // % crop rect (0-100)
+  rotation: number;
+}
+
 interface TeacherComment {
   qId: string; text: string; symbol?: string;
   position: "above" | "right" | "below" | "margin";
@@ -326,13 +346,15 @@ function fpOff(fp: number[] | undefined, i: number): number {
 function StepRail({ current, onGoto }: { current: WorkflowStep; onGoto: (s: WorkflowStep) => void }) {
   const ci = STEPS.findIndex(s => s.key === current);
   return (
-    <nav className="hidden lg:flex flex-col w-52 shrink-0 bg-slate-900 text-white min-h-screen py-6 px-3 gap-1">
+    <nav className="hidden lg:flex flex-col w-56 shrink-0 min-h-screen py-5 px-3 gap-0.5"
+      style={{ background: "linear-gradient(160deg,#1e1b4b 0%,#0f172a 100%)" }}>
       {/* Logo */}
-      <div className="flex items-center gap-2.5 px-3 pb-6 border-b border-white/10 mb-2">
-        <div className="w-9 h-9 bg-indigo-500 rounded-xl flex items-center justify-center font-black italic text-lg shadow-lg">nb</div>
+      <div className="flex items-center gap-2.5 px-2 pb-5 border-b border-white/10 mb-3">
+        <div className="w-10 h-10 rounded-2xl flex items-center justify-center font-black italic text-xl shadow-xl shrink-0"
+          style={{ background: "linear-gradient(135deg,#6366f1,#8b5cf6)" }}>nb</div>
         <div>
-          <p className="font-black text-sm leading-none">nanobanana</p>
-          <p className="text-[9px] text-white/40 font-medium mt-0.5">PRO v5</p>
+          <p className="font-black text-sm leading-none text-white tracking-tight">nanobanana</p>
+          <p className="text-[10px] font-semibold mt-0.5" style={{ color: "rgba(165,180,252,0.7)" }}>PRO — Gemini 2.5</p>
         </div>
       </div>
       {STEPS.map((s, i) => {
@@ -342,26 +364,28 @@ function StepRail({ current, onGoto }: { current: WorkflowStep; onGoto: (s: Work
             onClick={() => !locked && onGoto(s.key)}
             disabled={locked}
             title={locked ? "Complétez les étapes précédentes" : s.desc}
-            className={`group flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-all duration-150 relative
-              ${active ? "bg-indigo-500 text-white shadow-lg shadow-indigo-500/30"
-                : done ? "text-white/70 hover:bg-white/10 hover:text-white cursor-pointer"
-                : i === ci + 1 ? "text-white/40 hover:bg-white/5 cursor-pointer"
-                : "text-white/20 cursor-not-allowed"}`}>
-            {/* Step number / icon */}
-            <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 text-sm font-black transition-all
-              ${active ? "bg-white/20" : done ? "bg-indigo-500/60" : "bg-white/5"}`}>
-              {done ? <CheckCircle className="h-4 w-4 text-indigo-300" /> : s.icon}
+            className={`group flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-all duration-200 relative
+              ${active
+                ? "text-white shadow-lg"
+                : done ? "text-white/60 hover:text-white hover:bg-white/8 cursor-pointer"
+                : i === ci + 1 ? "text-white/35 hover:bg-white/5 cursor-pointer"
+                : "text-white/15 cursor-not-allowed"}`}
+            style={active ? { background: "linear-gradient(135deg,rgba(99,102,241,0.9),rgba(139,92,246,0.8))", boxShadow: "0 4px 15px rgba(99,102,241,0.4)" } : {}}>
+            <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 text-xs font-black transition-all
+              ${active ? "bg-white/20" : done ? "bg-indigo-500/50" : "bg-white/5"}`}>
+              {done ? <CheckCircle className="h-3.5 w-3.5 text-indigo-300" /> : s.icon}
             </div>
             <div className="min-w-0">
-              <p className={`text-xs font-bold leading-none ${active ? "text-white" : ""}`}>{s.label}</p>
-              <p className={`text-[10px] mt-0.5 leading-none ${active ? "text-white/70" : "text-white/30"}`}>{s.desc}</p>
+              <p className="text-xs font-bold leading-none">{s.label}</p>
+              <p className={`text-[10px] mt-0.5 leading-none ${active ? "text-white/60" : "text-white/25"}`}>{s.desc}</p>
             </div>
-            {active && <div className="absolute right-0 top-1/2 -translate-y-1/2 w-0.5 h-5 bg-white rounded-l-full" />}
+            {done && !active && <CheckCircle className="h-3 w-3 text-indigo-400/70 ml-auto shrink-0" />}
           </button>
         );
       })}
-      <div className="mt-auto pt-4 border-t border-white/10 px-3">
-        <p className="text-[9px] text-white/25 font-medium">Gemini 2.5 Flash · Rotation 5 clés</p>
+      <div className="mt-auto pt-4 border-t border-white/10 px-2 space-y-1">
+        <p className="text-[9px] font-bold" style={{ color: "rgba(165,180,252,0.5)" }}>● Rotation 10 clés Gemini</p>
+        <p className="text-[9px]" style={{ color: "rgba(255,255,255,0.2)" }}>3 passes · Anti-quota · Fallback</p>
       </div>
     </nav>
   );
@@ -1029,6 +1053,240 @@ function DraggableAnswer({ question, answer, profile, variantSeed, editMode, off
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// DRAGGABLE GRADE MARK (✓ ✗ note finale date)
+// ─────────────────────────────────────────────────────────────────────────────
+function DraggableGradeMark({ mark, editMode, onMove, onSelect, selected }: {
+  mark: GradeMark; editMode: boolean;
+  onMove: (id: string, dx: number, dy: number) => void;
+  onSelect: (id: string) => void;
+  selected: boolean;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const dragging = useRef<{ sx: number; sy: number } | null>(null);
+
+  useEffect(() => {
+    if (!editMode) return;
+    const getPos = (e: MouseEvent | TouchEvent) => {
+      if ("touches" in e) return { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      return { x: (e as MouseEvent).clientX, y: (e as MouseEvent).clientY };
+    };
+    const mv = (e: MouseEvent | TouchEvent) => {
+      if (!dragging.current || !ref.current) return;
+      const container = ref.current.parentElement;
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      const pos = getPos(e);
+      const dx = ((pos.x - dragging.current.sx) / rect.width) * 100;
+      const dy = ((pos.y - dragging.current.sy) / rect.height) * 100;
+      dragging.current = { sx: pos.x, sy: pos.y };
+      onMove(mark.id, dx, dy);
+    };
+    const up = () => { dragging.current = null; };
+    window.addEventListener("mousemove", mv);
+    window.addEventListener("mouseup", up);
+    window.addEventListener("touchmove", mv, { passive: false });
+    window.addEventListener("touchend", up);
+    return () => {
+      window.removeEventListener("mousemove", mv);
+      window.removeEventListener("mouseup", up);
+      window.removeEventListener("touchmove", mv);
+      window.removeEventListener("touchend", up);
+    };
+  }, [editMode, onMove, mark.id]);
+
+  const fontSizePx = mark.fontSize * 14;
+  const isSymbol = mark.type === "check" || mark.type === "cross";
+  const isGrade = mark.type === "grade";
+
+  return (
+    <div
+      ref={ref}
+      onMouseDown={e => {
+        if (!editMode) return;
+        e.stopPropagation();
+        dragging.current = { sx: e.clientX, sy: e.clientY };
+        onSelect(mark.id);
+      }}
+      onTouchStart={e => {
+        if (!editMode) return;
+        e.stopPropagation();
+        const t = e.touches[0];
+        dragging.current = { sx: t.clientX, sy: t.clientY };
+        onSelect(mark.id);
+      }}
+      style={{
+        position: "absolute",
+        left: `${mark.x}%`, top: `${mark.y}%`,
+        color: mark.color,
+        fontSize: fontSizePx,
+        fontFamily: isSymbol ? "Arial, sans-serif" : "'Homemade Apple', cursive",
+        fontWeight: isSymbol ? 900 : 700,
+        fontStyle: "italic",
+        zIndex: 8,
+        cursor: editMode ? "grab" : "default",
+        userSelect: "none",
+        transform: `rotate(${isSymbol ? -3 : isGrade ? -2 : -1.5}deg)`,
+        filter: `drop-shadow(0 1px 2px rgba(0,0,0,0.15)) ${isGrade ? "drop-shadow(0 0 4px rgba(220,38,38,0.3))" : ""}`,
+        lineHeight: 1,
+        outline: selected && editMode ? `2px dashed ${mark.color}` : "none",
+        borderRadius: 2,
+        padding: selected && editMode ? "2px 4px" : 0,
+        transition: "filter 0.15s",
+        whiteSpace: "nowrap",
+      }}
+    >
+      {mark.text}
+      {editMode && (
+        <div style={{
+          position: "absolute", top: -10, left: "50%", transform: "translateX(-50%)",
+          fontSize: 7, background: "rgba(220,38,38,0.85)", color: "#fff",
+          padding: "1px 3px", borderRadius: 2, whiteSpace: "nowrap", pointerEvents: "none",
+          opacity: selected ? 1 : 0, transition: "opacity 0.15s",
+        }}>✥ glisser</div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DRAGGABLE ART IMAGE (drag + resize + crop)
+// ─────────────────────────────────────────────────────────────────────────────
+function DraggableArtImage({ src, transform, editMode, onUpdate }: {
+  src: string; transform: ArtTransform; editMode: boolean;
+  onUpdate: (patch: Partial<ArtTransform>) => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{ type: "move" | "resize"; sx: number; sy: number; ox: number; oy: number; ow: number; oh: number } | null>(null);
+
+  useEffect(() => {
+    if (!editMode) return;
+    const getPos = (e: MouseEvent | TouchEvent) => {
+      if ("touches" in e && e.touches.length > 0)
+        return { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      return { x: (e as MouseEvent).clientX, y: (e as MouseEvent).clientY };
+    };
+    const mv = (e: MouseEvent | TouchEvent) => {
+      if (!dragRef.current || !ref.current) return;
+      const container = ref.current.parentElement;
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      const pos = getPos(e);
+      const dx = ((pos.x - dragRef.current.sx) / rect.width) * 100;
+      const dy = ((pos.y - dragRef.current.sy) / rect.height) * 100;
+      if (dragRef.current.type === "move") {
+        onUpdate({
+          x: Math.max(0, Math.min(90, dragRef.current.ox + dx)),
+          y: Math.max(0, Math.min(90, dragRef.current.oy + dy)),
+        });
+      } else {
+        onUpdate({
+          w: Math.max(5, Math.min(100, dragRef.current.ow + dx)),
+          h: Math.max(5, Math.min(100, dragRef.current.oh + dy)),
+        });
+      }
+    };
+    const up = () => { dragRef.current = null; };
+    window.addEventListener("mousemove", mv);
+    window.addEventListener("mouseup", up);
+    window.addEventListener("touchmove", mv, { passive: false });
+    window.addEventListener("touchend", up);
+    return () => {
+      window.removeEventListener("mousemove", mv);
+      window.removeEventListener("mouseup", up);
+      window.removeEventListener("touchmove", mv);
+      window.removeEventListener("touchend", up);
+    };
+  }, [editMode, onUpdate]);
+
+  const { cropX, cropY, cropW, cropH } = transform;
+  const hasCrop = cropW < 100 || cropH < 100 || cropX > 0 || cropY > 0;
+
+  const startDrag = (clientX: number, clientY: number) => {
+    dragRef.current = { type: "move", sx: clientX, sy: clientY, ox: transform.x, oy: transform.y, ow: transform.w, oh: transform.h };
+  };
+  const startResize = (clientX: number, clientY: number) => {
+    dragRef.current = { type: "resize", sx: clientX, sy: clientY, ox: transform.x, oy: transform.y, ow: transform.w, oh: transform.h };
+  };
+
+  return (
+    <div
+      ref={ref}
+      style={{
+        position: "absolute",
+        left: `${transform.x}%`, top: `${transform.y}%`,
+        width: `${transform.w}%`, height: `${transform.h}%`,
+        zIndex: 4,
+        cursor: editMode ? "grab" : "default",
+        overflow: "hidden",
+        borderRadius: 2,
+        transform: `rotate(${transform.rotation}deg)`,
+        outline: editMode ? "2px dashed rgba(99,102,241,0.7)" : "none",
+        boxShadow: editMode ? "0 0 0 1px rgba(99,102,241,0.3)" : "none",
+      }}
+      onMouseDown={e => {
+        if (!editMode) return;
+        e.stopPropagation();
+        startDrag(e.clientX, e.clientY);
+      }}
+      onTouchStart={e => {
+        if (!editMode) return;
+        e.stopPropagation();
+        startDrag(e.touches[0].clientX, e.touches[0].clientY);
+      }}
+    >
+      <img
+        src={src}
+        alt="Art"
+        draggable={false}
+        style={{
+          position: "absolute",
+          left: hasCrop ? `${-(cropX / cropW) * 100}%` : 0,
+          top:  hasCrop ? `${-(cropY / cropH) * 100}%` : 0,
+          width: hasCrop ? `${(100 / cropW) * 100}%` : "100%",
+          height: hasCrop ? `${(100 / cropH) * 100}%` : "100%",
+          objectFit: "fill",
+          pointerEvents: "none",
+        }}
+      />
+      {/* Drag hint overlay */}
+      {editMode && (
+        <div style={{
+          position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center",
+          background: "rgba(99,102,241,0.08)", pointerEvents: "none",
+        }}>
+          <div style={{ background: "rgba(99,102,241,0.85)", color: "#fff", fontSize: 9, fontWeight: 700,
+            padding: "2px 6px", borderRadius: 4, opacity: 0.85 }}>
+            ✥ Glisser
+          </div>
+        </div>
+      )}
+      {/* Resize handle — bottom-right corner */}
+      {editMode && (
+        <div
+          onMouseDown={e => {
+            e.stopPropagation();
+            startResize(e.clientX, e.clientY);
+          }}
+          onTouchStart={e => {
+            e.stopPropagation();
+            startResize(e.touches[0].clientX, e.touches[0].clientY);
+          }}
+          style={{
+            position: "absolute", right: 0, bottom: 0,
+            width: 20, height: 20,
+            background: "linear-gradient(135deg, #6366f1, #8b5cf6)",
+            cursor: "se-resize", borderRadius: "6px 0 0 0",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: 10, color: "#fff", fontWeight: 900, zIndex: 2,
+            boxShadow: "0 -1px 4px rgba(99,102,241,0.4)",
+          }}
+        >⤡</div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // DRAGGABLE LABEL (student name / teacher note)
 // ─────────────────────────────────────────────────────────────────────────────
 function DraggableLabel({ label, x, y, fontFamily, fontSize, color, editMode, onMove, italic, maxWidth }: {
@@ -1100,10 +1358,11 @@ function DraggableLabel({ label, x, y, fontFamily, fontSize, color, editMode, on
 // ─────────────────────────────────────────────────────────────────────────────
 function PageLayer({ page, pi, questions, answers, profile, variantSeed,
   editMode, offsets, onOffsetChange, effects, shapes, comments,
-  onCommentDrag, forPrint, artImageOverride, studentName,
+  onCommentDrag, forPrint, artImageOverride, artTransform, onArtUpdate, studentName,
   onUpdateShape, selectedShapeId, onSelectShape,
   showName, namePosX, namePosY, onNameMove,
-  teacherNote, onTeacherNoteMove }: {
+  teacherNote, onTeacherNoteMove,
+  gradeMarks, onGradeMarkMove, selectedGradeMarkId, onSelectGradeMark }: {
   page: EvalPage; pi: number;
   questions: DetectedQuestion[]; answers: Record<string, string>;
   profile: StudentProfile; variantSeed: number;
@@ -1114,6 +1373,8 @@ function PageLayer({ page, pi, questions, answers, profile, variantSeed,
   onCommentDrag?: (qId: string, svgDx: number, svgDy: number) => void;
   forPrint?: boolean;
   artImageOverride?: string;
+  artTransform?: ArtTransform;
+  onArtUpdate?: (patch: Partial<ArtTransform>) => void;
   studentName?: string;
   onUpdateShape?: (id: string, patch: Partial<GeometryShape>) => void;
   selectedShapeId?: string | null;
@@ -1123,10 +1384,18 @@ function PageLayer({ page, pi, questions, answers, profile, variantSeed,
   onNameMove?: (dx: number, dy: number) => void;
   teacherNote?: TeacherNote | null;
   onTeacherNoteMove?: (dx: number, dy: number) => void;
+  gradeMarks?: GradeMark[];
+  onGradeMarkMove?: (id: string, dx: number, dy: number) => void;
+  selectedGradeMarkId?: string | null;
+  onSelectGradeMark?: (id: string) => void;
 }) {
   const filterId = `p${pi}`;
   const pageQ    = questions.filter(q => q.pageIndex === pi);
   const containerRef = useRef<HTMLDivElement>(null);
+  const pageGradeMarks = (gradeMarks ?? []).filter(m => m.pageIndex === pi);
+
+  const defaultArtTransform: ArtTransform = { x: 0, y: 0, w: 100, h: 100, cropX: 0, cropY: 0, cropW: 100, cropH: 100, rotation: 0 };
+  const artT = artTransform ?? defaultArtTransform;
 
   return (
     <div ref={containerRef} className="relative bg-white" style={{
@@ -1138,9 +1407,17 @@ function PageLayer({ page, pi, questions, answers, profile, variantSeed,
           style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "fill", pointerEvents: "none" }}
           draggable={false} />
       )}
-      {artImageOverride && (
-        <img src={artImageOverride} alt="Dessin élève"
-          style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain", pointerEvents: "none", zIndex: 3 }}
+      {artImageOverride && !forPrint && (
+        <DraggableArtImage
+          src={artImageOverride}
+          transform={artT}
+          editMode={editMode}
+          onUpdate={p => onArtUpdate?.(p)}
+        />
+      )}
+      {artImageOverride && forPrint && (
+        <img src={artImageOverride} alt="Art"
+          style={{ position: "absolute", left: `${artT.x}%`, top: `${artT.y}%`, width: `${artT.w}%`, height: `${artT.h}%`, objectFit: "fill", zIndex: 3, pointerEvents: "none", transform: `rotate(${artT.rotation}deg)` }}
           draggable={false} />
       )}
       <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", overflow: "visible",
@@ -1179,6 +1456,17 @@ function PageLayer({ page, pi, questions, answers, profile, variantSeed,
             onDelta={onOffsetChange} effects={effects} />
         );
       })}
+      {/* Grade marks (✓ ✗ note date) */}
+      {pageGradeMarks.map(m => (
+        <DraggableGradeMark
+          key={m.id}
+          mark={m}
+          editMode={editMode && !forPrint}
+          onMove={(id, dx, dy) => onGradeMarkMove?.(id, dx, dy)}
+          onSelect={id => onSelectGradeMark?.(id)}
+          selected={selectedGradeMarkId === m.id}
+        />
+      ))}
       {/* Draggable student name — page 0 only */}
       {pi === 0 && studentName && showName !== false && (
         <DraggableLabel
@@ -1488,39 +1776,55 @@ function BatchStudentRow({ bs, savedProfiles, onUpdate, onRemove, onGenerate, qu
   onGenerate: (id: string) => void;
   questions: DetectedQuestion[];
 }) {
+  const levelColors: Record<string, string> = {
+    "1-2": "bg-red-100 text-red-700 border-red-200",
+    "3-4": "bg-orange-100 text-orange-700 border-orange-200",
+    "5-6": "bg-blue-100 text-blue-700 border-blue-200",
+    "7-8": "bg-emerald-100 text-emerald-700 border-emerald-200",
+  };
+  const lc = levelColors[bs.criteriaLevel] || "bg-slate-100 text-slate-600 border-slate-200";
   return (
     <div className={`flex items-center gap-2 p-2.5 border rounded-xl transition
-      ${bs.isDone ? "border-green-300 bg-green-50" : "border-slate-200 bg-white"}`}>
+      ${bs.isDone ? "border-emerald-300 bg-emerald-50" : bs.isGenerating ? "border-indigo-300 bg-indigo-50" : "border-slate-200 bg-white"}`}>
+      {/* Avatar */}
+      <div className={`w-7 h-7 rounded-full flex items-center justify-center font-black text-xs shrink-0
+        ${bs.isDone ? "bg-emerald-500 text-white" : bs.isGenerating ? "bg-indigo-500 text-white" : "bg-slate-200 text-slate-600"}`}>
+        {bs.isGenerating ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : bs.isDone ? <CheckCircle className="h-3.5 w-3.5" /> : (bs.profile.name[0]?.toUpperCase() || "?")}
+      </div>
       <div className="flex-1 min-w-0">
         <select value={bs.profile.name}
           onChange={e => {
             const p = savedProfiles.find(p => p.name === e.target.value);
             if (p) onUpdate(bs.id, { profile: { ...p, hwImage: p.hwImageBase64 || p.hwImage || null } });
           }}
-          className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-semibold bg-white focus:outline-none focus:border-indigo-400">
+          className="w-full border border-slate-200 rounded-lg px-2 py-1 text-xs font-semibold bg-white focus:outline-none focus:border-indigo-400">
           <option value="">— Choisir élève —</option>
           {savedProfiles.map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
         </select>
       </div>
-      <select value={bs.criteriaLevel}
-        onChange={e => onUpdate(bs.id, { criteriaLevel: e.target.value as CriteriaLevel })}
-        className="w-16 border border-slate-200 rounded-lg px-1 py-1.5 text-[10px] font-semibold bg-white focus:outline-none focus:border-indigo-400">
-        {EXAM_CRITERIA_LEVELS.map(l => <option key={l.level} value={l.level}>{l.level}/8</option>)}
-      </select>
+      {/* Level selector — prominent pill style */}
+      <div className="flex flex-col items-center gap-0.5">
+        <span className="text-[7px] font-bold text-slate-400 uppercase tracking-wide">Niveau</span>
+        <select value={bs.criteriaLevel}
+          onChange={e => onUpdate(bs.id, { criteriaLevel: e.target.value as CriteriaLevel })}
+          className={`w-14 border rounded-lg px-1 py-1 text-[10px] font-bold focus:outline-none cursor-pointer ${lc}`}>
+          {EXAM_CRITERIA_LEVELS.map(l => <option key={l.level} value={l.level}>{l.level}/8</option>)}
+        </select>
+      </div>
       {bs.isDone ? (
-        <div className="flex items-center gap-1 text-green-600 text-[10px] font-bold">
+        <div className="flex items-center gap-1 text-emerald-600 text-[10px] font-bold whitespace-nowrap">
           <CheckCircle className="h-3.5 w-3.5" /> OK
         </div>
       ) : (
         <button onClick={() => onGenerate(bs.id)}
           disabled={bs.isGenerating || !bs.profile.name || questions.length === 0}
           className="px-2.5 py-1.5 bg-indigo-500 text-white rounded-lg text-[10px] font-bold
-            disabled:opacity-50 hover:bg-indigo-600 transition flex items-center gap-1">
+            disabled:opacity-50 hover:bg-indigo-600 active:scale-95 transition flex items-center gap-1 whitespace-nowrap">
           {bs.isGenerating ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
           {bs.isGenerating ? "…" : "Go"}
         </button>
       )}
-      <button onClick={() => onRemove(bs.id)} className="p-1.5 rounded-lg hover:bg-red-50 transition shrink-0">
+      <button onClick={() => onRemove(bs.id)} className="p-1.5 rounded-lg hover:bg-red-50 transition shrink-0" title="Supprimer">
         <Trash2 className="h-3.5 w-3.5 text-red-400" />
       </button>
     </div>
@@ -1537,6 +1841,8 @@ function buildPrintHTML(
   studentName: string, artImages?: Record<number, string>,
   teacherNote?: TeacherNote | null,
   namePos?: { x: number; y: number },
+  gradeMarks?: GradeMark[],
+  artTransforms?: Record<number, ArtTransform>,
 ): string {
   const fp       = profile.fingerprint;
   const useFP    = !!fp && (fp.confidenceScore ?? 0) >= 55;
@@ -1593,15 +1899,29 @@ function buildPrintHTML(
     return `<div style="position:absolute;left:${teacherNote.x}%;top:${teacherNote.y}%;font-family:'${nff}',cursive;font-size:${nfs}px;color:${teacherNote.color};z-index:7;pointer-events:none;max-width:90%;line-height:1.4;transform:rotate(-0.8deg);opacity:0.95">${teacherNote.text.replace(/&/g,"&amp;").replace(/</g,"&lt;")}</div>`;
   };
 
+  const buildGradeMarksHTML = (pi: number) =>
+    (gradeMarks ?? []).filter(m => m.pageIndex === pi).map(m => {
+      const fsPx = m.fontSize * 14;
+      const ff = (m.type === "check" || m.type === "cross") ? "Arial, sans-serif" : "'Homemade Apple', cursive";
+      const fw = (m.type === "check" || m.type === "cross") ? "900" : "700";
+      return `<div style="position:absolute;left:${m.x}%;top:${m.y}%;color:${m.color};font-size:${fsPx}px;font-family:${ff};font-weight:${fw};font-style:italic;z-index:8;transform:rotate(-2deg);line-height:1">${m.text}</div>`;
+    }).join("\n");
+
   const pagesHTML = pages.map((page, pi) => {
     const imgHTML = page.base64 ? `<img src="${page.base64}" style="position:absolute;inset:0;width:100%;height:100%;object-fit:fill"/>` : "";
-    const artImg  = artImages?.[pi] ? `<img src="${artImages[pi]}" style="position:absolute;inset:0;width:100%;height:100%;object-fit:contain;z-index:3;pointer-events:none"/>` : "";
+    const artT = artTransforms?.[pi];
+    const artImg  = artImages?.[pi]
+      ? artT
+        ? `<img src="${artImages[pi]}" style="position:absolute;left:${artT.x}%;top:${artT.y}%;width:${artT.w}%;height:${artT.h}%;object-fit:fill;z-index:3;pointer-events:none;transform:rotate(${artT.rotation}deg)"/>`
+        : `<img src="${artImages[pi]}" style="position:absolute;inset:0;width:100%;height:100%;object-fit:contain;z-index:3;pointer-events:none"/>`
+      : "";
     const commSVG = effects.showComments ? buildPageCommentsSVG(pi) : "";
     const ansHTML = buildAnswersHTML(pi);
+    const gradeHTML = buildGradeMarksHTML(pi);
     return `<div style="position:relative;width:210mm;height:297mm;overflow:hidden;background:white;page-break-after:always;box-sizing:border-box">
   ${imgHTML}${artImg}
   ${commSVG ? `<svg style="position:absolute;inset:0;width:100%;height:100%;overflow:visible" viewBox="0 0 100 141.4" preserveAspectRatio="none">${commSVG}</svg>` : ""}
-  ${nameHTML(pi)}${noteHTML(pi)}${ansHTML}
+  ${nameHTML(pi)}${noteHTML(pi)}${gradeHTML}${ansHTML}
 </div>`;
   }).join("\n");
 
@@ -1660,7 +1980,7 @@ export default function App() {
 
   const [shapes, setShapes]             = useState<GeometryShape[]>([]);
   const [artImages, setArtImages]       = useState<Record<number, string>>({});
-  const [sidePanel, setSidePanel]       = useState<"position" | "effects" | "comments" | "geometry" | "art">("position");
+  const [sidePanel, setSidePanel]       = useState<"position" | "effects" | "comments" | "geometry" | "art" | "grades">("position");
 
   // Teacher evaluation note (draggable, page 0)
   const [teacherNote, setTeacherNote]   = useState<TeacherNote | null>(null);
@@ -1674,9 +1994,38 @@ export default function App() {
   // Batch generation progress
   const [batchProgress, setBatchProgress] = useState<{ done: number; total: number } | null>(null);
   const [selectedShapeId, setSelectedShapeId] = useState<string | null>(null);
+  const [selectedGradeMarkId, setSelectedGradeMarkId] = useState<string | null>(null);
+
+  // Grade marks overlay (✓ / ✗ / grade / date) — draggable red-pen elements
+  const [gradeMarks, setGradeMarks] = useState<GradeMark[]>([]);
+
+  // Art image transforms (drag + resize + crop)
+  const [artTransforms, setArtTransforms] = useState<Record<number, ArtTransform>>({});
 
   const handleUpdateShape = useCallback((id: string, patch: Partial<GeometryShape>) => {
     setShapes(prev => prev.map(s => s.id === id ? { ...s, ...patch } : s));
+  }, []);
+
+  const addGradeMark = useCallback((type: GradeMark["type"], pageIndex: number) => {
+    const defaults: Record<GradeMark["type"], string> = {
+      check: "✓", cross: "✗", grade: "6/8", date: new Date().toLocaleDateString("fr-FR"), custom: "?",
+    };
+    setGradeMarks(prev => [...prev, {
+      id: `gm_${Date.now()}`,
+      pageIndex, type,
+      text: defaults[type],
+      x: 45, y: 45,
+      fontSize: type === "grade" ? 3.5 : 2.8,
+      color: "#dc2626",
+    }]);
+  }, []);
+
+  const updateGradeMark = useCallback((id: string, patch: Partial<GradeMark>) => {
+    setGradeMarks(prev => prev.map(m => m.id === id ? { ...m, ...patch } : m));
+  }, []);
+
+  const deleteGradeMark = useCallback((id: string) => {
+    setGradeMarks(prev => prev.filter(m => m.id !== id));
   }, []);
 
   const currentBatch       = batchMode ? batchStudents[activeBatchIdx] ?? null : null;
@@ -2142,63 +2491,28 @@ export default function App() {
     pComments: TeacherComment[],
   ) => {
     const pages = evalPages.length > 0 ? evalPages : [{ base64: "", pageNum: 1 }];
-    const html = buildPrintHTML(pages, questions, pAnswers, pOffsets, pProfile, pComments, effects, pProfile.name, artImages, teacherNote, namePos);
+    const html = buildPrintHTML(pages, questions, pAnswers, pOffsets, pProfile, pComments, effects, pProfile.name, artImages, teacherNote, namePos, gradeMarks, artTransforms);
     const w = window.open("", "_blank", "width=900,height=700");
     if (!w) { alert("Autorisez les pop-ups pour imprimer."); return; }
     w.document.open(); w.document.write(html); w.document.close();
-  }, [evalPages, questions, effects, artImages, teacherNote, namePos]);
+  }, [evalPages, questions, effects, artImages, teacherNote, namePos, gradeMarks, artTransforms]);
 
   const printAllBatch = useCallback(() => {
     const pages = evalPages.length > 0 ? evalPages : [{ base64: "", pageNum: 1 }];
-    const buildStudent = (bs: BatchStudent): string => {
-      const prof  = bs.profile;
-      const fp    = prof.fingerprint;
-      const useFP = !!fp && (fp?.confidenceScore ?? 0) >= 55;
-      const fs    = useFP ? Math.max(11, fp!.suggestedSize) : Math.max(11, prof.fontSize);
-      const lh    = (useFP ? fp!.lineHeightMultiplier : 1.6) * fs;
-      const ff    = getFontFamily(prof.fontKey);
+    // Reuse buildPrintHTML for each student — includes grade marks + art transforms
+    const allHTML = batchStudents.filter(b => b.isDone).map(bs => {
+      // Extract inner body HTML from buildPrintHTML (strip full html wrapper)
+      const fullHtml = buildPrintHTML(
+        pages, questions, bs.answers, bs.offsets, bs.profile,
+        bs.comments, effects, bs.profile.name,
+        artImages, teacherNote, namePos,
+        gradeMarks, artTransforms,
+      );
+      // Extract just the <body> contents
+      const bodyMatch = fullHtml.match(/<body>([\s\S]*?)<script>/);
+      return bodyMatch ? bodyMatch[1].trim() : "";
+    }).join("\n");
 
-      const buildComments = (pi: number) => bs.comments
-        .filter(c => questions.find(q => q.id === c.qId)?.pageIndex === pi)
-        .map(c => {
-          const q = questions.find(qq => qq.id === c.qId);
-          if (!q) return "";
-          let bx = q.x, by = q.y;
-          if (c.position === "right")  bx = Math.min(q.x + (q.maxWidth ?? 60) + 2, 85);
-          if (c.position === "above")  by = Math.max(2, q.y - 5);
-          if (c.position === "below")  by = q.y + 7;
-          if (c.position === "margin") bx = 1;
-          const cx = bx + c.ox, cy = by + c.oy;
-          const fill = c.teacherColor || DEFAULT_TEACHER_COLOR;
-          const fss  = c.teacherFontSize || DEFAULT_TEACHER_FONTSIZE;
-          const ffc  = getFontFamily(c.teacherFontKey || DEFAULT_TEACHER_FONT);
-          let out = "";
-          if (c.symbol === "✓" || c.style === "check") out += `<text x="${cx-2}" y="${cy}" font-size="${fss+1.5}" fill="${fill}" font-family="Arial" font-weight="bold">✓</text>`;
-          if (c.symbol === "✗" || c.style === "cross") out += `<text x="${cx-2}" y="${cy}" font-size="${fss+1.5}" fill="${fill}" font-family="Arial" font-weight="bold">✗</text>`;
-          if (c.text) out += `<text x="${cx}" y="${cy}" font-size="${fss}" fill="${fill}" font-family="'${ffc}',cursive" transform="rotate(-1.8,${cx},${cy})" opacity="0.93">${c.text.replace(/&/g,"&amp;").replace(/</g,"&lt;")}</text>`;
-          return out;
-        }).join("\n");
-
-      const buildAnswers = (pi: number) => questions.filter(q => q.pageIndex === pi).map(q => {
-        const a = bs.answers[q.id] ?? ""; if (!a) return "";
-        const off = bs.offsets[q.id] ?? { x: 0, y: 0 };
-        const lines = a.split("\n").map(l => `<div style="margin:0;padding:0;line-height:${lh}px">${l || "&nbsp;"}</div>`).join("");
-        return `<div style="position:absolute;left:${q.x}%;top:${q.y}%;transform:translate(${off.x}px,${off.y}px);max-width:${q.maxWidth ?? 78}%;font-family:'${ff}',cursive;font-size:${fs}px;color:${prof.inkColor};pointer-events:none;z-index:5">${lines}</div>`;
-      }).join("\n");
-
-      return pages.map((page, pi) => {
-        const imgHTML = page.base64 ? `<img src="${page.base64}" style="position:absolute;inset:0;width:100%;height:100%;object-fit:fill"/>` : "";
-        const artImg  = artImages[pi] ? `<img src="${artImages[pi]}" style="position:absolute;inset:0;width:100%;height:100%;object-fit:contain;z-index:3"/>` : "";
-        const commSVG = effects.showComments ? buildComments(pi) : "";
-        const nameOv  = pi === 0 && prof.name ? `<div style="position:absolute;top:4%;right:4%;font-family:'${ff}',cursive;font-size:${Math.max(13,fs)}px;color:${prof.inkColor};z-index:6;transform:rotate(-1.5deg);opacity:0.9;max-width:45%">${prof.name}</div>` : "";
-        return `<div style="position:relative;width:210mm;height:297mm;overflow:hidden;background:white;page-break-after:always;box-sizing:border-box">
-${imgHTML}${artImg}
-${commSVG ? `<svg style="position:absolute;inset:0;width:100%;height:100%;overflow:visible" viewBox="0 0 100 141.4" preserveAspectRatio="none">${commSVG}</svg>` : ""}
-${nameOv}${buildAnswers(pi)}</div>`;
-      }).join("\n");
-    };
-
-    const allHTML = batchStudents.filter(b => b.isDone).map(b => buildStudent(b)).join("\n");
     const html = `<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"/>
 <title>Impression groupe — nanobanana PRO</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Homemade+Apple&family=Marck+Script&family=Parisienne&family=Allura&family=La+Belle+Aurore&family=Bad+Script&display=swap">
@@ -2209,7 +2523,7 @@ ${nameOv}${buildAnswers(pi)}</div>`;
     const w = window.open("", "_blank", "width=900,height=700");
     if (!w) { alert("Autorisez les pop-ups."); return; }
     w.document.open(); w.document.write(html); w.document.close();
-  }, [batchStudents, evalPages, questions, effects, artImages]);
+  }, [batchStudents, evalPages, questions, effects, artImages, teacherNote, namePos, gradeMarks, artTransforms]);
 
   const displayPages = evalPages.length > 0 ? evalPages : [{ base64: "", pageNum: 1 }];
   const upd = <K extends keyof StudentProfile>(k: K, v: StudentProfile[K]) =>
@@ -2219,36 +2533,47 @@ ${nameOv}${buildAnswers(pi)}</div>`;
   // RENDER
   // ─────────────────────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen bg-slate-100 flex antialiased">
+    <div className="min-h-screen flex antialiased" style={{ background: "linear-gradient(135deg,#f8faff 0%,#f0f4ff 50%,#faf5ff 100%)" }}>
       <StepRail current={step} onGoto={setStep} />
 
-      <div className="flex-1 flex flex-col min-h-screen">
+      <div className="flex-1 flex flex-col min-h-screen" style={{ background: "linear-gradient(135deg,#f8faff 0%,#f0f4ff 50%,#faf5ff 100%)" }}>
         {/* Mobile step bar */}
         <StepBar current={step} onGoto={setStep} />
 
         {/* Header strip */}
-        <header className="bg-white border-b border-slate-200 px-4 lg:px-6 py-3 flex items-center justify-between sticky top-0 z-40">
+        <header className="bg-white/90 backdrop-blur border-b border-slate-200/80 px-4 lg:px-6 py-3 flex items-center justify-between sticky top-0 z-40 shadow-sm">
           <div className="flex items-center gap-2 lg:hidden">
-            <div className="w-8 h-8 bg-indigo-500 rounded-lg flex items-center justify-center font-black italic text-white">nb</div>
-            <span className="font-black text-sm">nanobanana PRO</span>
+            <div className="w-8 h-8 rounded-xl flex items-center justify-center font-black italic text-white text-sm shadow-md"
+              style={{ background: "linear-gradient(135deg,#6366f1,#8b5cf6)" }}>nb</div>
+            <span className="font-black text-sm text-slate-800">nanobanana PRO</span>
           </div>
-          <div className="hidden lg:block">
-            <h1 className="font-bold text-slate-500 text-sm">
-              {STEPS.find(s => s.key === step)?.label}
-              <span className="text-slate-400"> — {STEPS.find(s => s.key === step)?.desc}</span>
-            </h1>
+          <div className="hidden lg:flex items-center gap-2">
+            <div className="flex items-center gap-1.5 text-slate-400 text-xs">
+              {STEPS.map((s, i) => {
+                const ci2 = STEPS.findIndex(x => x.key === step);
+                const isDone = i < ci2, isActive = s.key === step;
+                return (
+                  <React.Fragment key={s.key}>
+                    {i > 0 && <ChevronRight className="h-3 w-3 text-slate-300" />}
+                    <span className={`font-semibold ${isActive ? "text-indigo-600" : isDone ? "text-slate-500" : "text-slate-300"}`}>
+                      {s.label}
+                    </span>
+                  </React.Fragment>
+                );
+              })}
+            </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
             {activeProfile.fingerprint && (
-              <span className={`text-[10px] font-bold px-2 py-1 rounded-full
-                ${activeProfile.fingerprint.confidenceScore >= 75 ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>
+              <span className={`text-[10px] font-bold px-2 py-1 rounded-full border
+                ${activeProfile.fingerprint.confidenceScore >= 75 ? "bg-emerald-50 border-emerald-200 text-emerald-700" : "bg-amber-50 border-amber-200 text-amber-700"}`}>
                 ✦ {activeProfile.fingerprint.confidenceScore}%
               </span>
             )}
-            <span className={`text-[10px] font-bold px-2 py-1 rounded-full ${mongoOk ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>
+            <span className={`text-[10px] font-bold px-2 py-1 rounded-full border ${mongoOk ? "bg-emerald-50 border-emerald-200 text-emerald-700" : "bg-slate-50 border-slate-200 text-slate-500"}`}>
               {mongoOk ? "● MongoDB" : "● Local"}
             </span>
-            <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-indigo-100 text-indigo-700">● Gemini 2.5</span>
+            <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-indigo-50 border border-indigo-200 text-indigo-700">⚡ Gemini 2.5</span>
           </div>
         </header>
 
@@ -2359,27 +2684,112 @@ ${nameOv}${buildAnswers(pi)}</div>`;
                 {batchMode ? (
                   /* ─ BATCH MODE ─ */
                   <div className="space-y-4">
+                    {/* ── Select from saved profiles ── */}
+                    {savedProfiles.length > 0 && (
+                      <div className="bg-white border border-purple-200 rounded-2xl p-4 space-y-3 shadow-sm">
+                        <h3 className="font-bold text-sm text-purple-800 flex items-center gap-2">
+                          <Users className="h-4 w-4" /> Sélectionner des élèves
+                          <span className="ml-auto text-[10px] font-semibold text-purple-500 bg-purple-50 px-2 py-0.5 rounded-full">
+                            {batchStudents.length} sélectionné{batchStudents.length > 1 ? "s" : ""}
+                          </span>
+                        </h3>
+                        <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
+                          {savedProfiles.map(p => {
+                            const inBatch = batchStudents.find(b => b.profile.name === p.name);
+                            const isInBatch = !!inBatch;
+                            return (
+                              <div key={p.name} className={`flex items-center gap-2 p-2 rounded-xl border transition
+                                ${isInBatch ? "border-purple-400 bg-purple-50" : "border-slate-200 bg-slate-50 hover:border-purple-200 hover:bg-purple-50/50"}`}>
+                                {/* Toggle checkbox */}
+                                <button
+                                  onClick={() => {
+                                    if (isInBatch) {
+                                      setBatchStudents(prev => prev.filter(b => b.profile.name !== p.name));
+                                    } else {
+                                      setBatchStudents(prev => [...prev, makeBatchStudent({ ...p, hwImage: p.hwImageBase64 || null }, criteriaLevel)]);
+                                    }
+                                  }}
+                                  className={`w-7 h-7 rounded-full flex items-center justify-center font-bold text-xs shrink-0 transition
+                                    ${isInBatch ? "bg-purple-500 text-white shadow-sm" : "bg-white border-2 border-slate-300 text-slate-500 hover:border-purple-400"}`}>
+                                  {isInBatch ? <CheckCircle className="h-4 w-4" /> : p.name[0]?.toUpperCase()}
+                                </button>
+                                <span className={`text-xs font-semibold flex-1 truncate ${isInBatch ? "text-purple-800" : "text-slate-600"}`}>{p.name}</span>
+                                {/* Per-student level selector — only when selected */}
+                                {isInBatch && (
+                                  <select
+                                    value={inBatch.criteriaLevel}
+                                    onClick={e => e.stopPropagation()}
+                                    onChange={e => {
+                                      setBatchStudents(prev => prev.map(b =>
+                                        b.profile.name === p.name
+                                          ? { ...b, criteriaLevel: e.target.value as CriteriaLevel }
+                                          : b
+                                      ));
+                                    }}
+                                    className="w-14 border border-purple-300 rounded-lg px-1 py-0.5 text-[10px] font-bold bg-white text-purple-700 focus:outline-none focus:border-purple-500 cursor-pointer">
+                                    {EXAM_CRITERIA_LEVELS.map(l => <option key={l.level} value={l.level}>{l.level}/8</option>)}
+                                  </select>
+                                )}
+                                {!isInBatch && (
+                                  <span className="text-[9px] text-slate-400 font-medium">Cliquer ici</span>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div className="flex gap-2 pt-1 border-t border-purple-100">
+                          <button onClick={() => setBatchStudents(savedProfiles.map(p => makeBatchStudent({ ...p, hwImage: p.hwImageBase64 || null }, criteriaLevel)))}
+                            className="flex-1 py-1.5 bg-purple-500 text-white border border-purple-500 rounded-xl text-xs font-bold hover:bg-purple-600 transition flex items-center justify-center gap-1.5 shadow-sm">
+                            <CheckCircle className="h-3 w-3" /> Tout sélectionner
+                          </button>
+                          <button onClick={() => setBatchStudents([])}
+                            className="flex-1 py-1.5 border border-slate-200 rounded-xl text-xs font-semibold text-slate-500 hover:bg-slate-50 hover:border-slate-300 transition">
+                            ✕ Tout désélectionner
+                          </button>
+                        </div>
+                        {batchStudents.length > 0 && (
+                          <p className="text-[9px] text-purple-500 text-center font-medium">
+                            💡 Chaque élève a son propre niveau — changez-le directement dans la liste
+                          </p>
+                        )}
+                      </div>
+                    )}
+
                     <div className="bg-white rounded-2xl border border-slate-200 p-5 space-y-3">
-                      <h3 className="font-bold text-sm text-slate-700 flex items-center gap-2">
-                        <Users className="h-4 w-4 text-purple-500" />
-                        Groupe — {batchStudents.length} élève{batchStudents.length > 1 ? "s" : ""}
-                      </h3>
-                      <div className="space-y-2 max-h-64 overflow-y-auto">
+                      <div className="flex items-center justify-between">
+                        <h3 className="font-bold text-sm text-slate-700 flex items-center gap-2">
+                          <Users className="h-4 w-4 text-purple-500" />
+                          Groupe — {batchStudents.length} élève{batchStudents.length > 1 ? "s" : ""}
+                        </h3>
+                        {batchStudents.length > 0 && (
+                          <span className="text-[10px] text-emerald-600 font-bold bg-emerald-50 px-2 py-0.5 rounded-full">
+                            {batchStudents.filter(b => b.isDone).length}/{batchStudents.length} générés
+                          </span>
+                        )}
+                      </div>
+                      <div className="space-y-2 max-h-72 overflow-y-auto">
                         {batchStudents.map(bs => (
                           <BatchStudentRow key={bs.id} bs={bs} savedProfiles={savedProfiles}
                             onUpdate={(id, patch) => setBatchStudents(prev => prev.map(b => b.id === id ? { ...b, ...patch } : b))}
                             onRemove={id => setBatchStudents(prev => prev.filter(b => b.id !== id))}
                             onGenerate={generateBatchStudentAnswers} questions={questions} />
                         ))}
+                        {batchStudents.length === 0 && (
+                          <div className="py-6 text-center">
+                            <Users className="h-8 w-8 text-slate-200 mx-auto mb-2" />
+                            <p className="text-xs text-slate-400 font-medium">Aucun élève sélectionné</p>
+                            <p className="text-[10px] text-slate-300 mt-0.5">Sélectionnez depuis vos profils enregistrés ci-dessus ou ajoutez manuellement</p>
+                          </div>
+                        )}
                       </div>
                       <div className="flex gap-2 pt-1">
                         <button onClick={() => setBatchStudents(prev => [...prev, makeBatchStudent(defaultProfile(`Élève ${prev.length + 1}`), criteriaLevel)])}
                           className="flex-1 py-2 border border-dashed border-slate-300 rounded-xl text-xs font-semibold text-slate-500 hover:border-indigo-300 hover:text-indigo-600 hover:bg-indigo-50 transition flex items-center justify-center gap-1">
-                          <Plus className="h-3.5 w-3.5" /> Ajouter élève
+                          <Plus className="h-3.5 w-3.5" /> Ajouter manuel
                         </button>
                         <button onClick={generateAllBatchStudents}
-                          disabled={!questions.length || !!batchProgress}
-                          className="flex-1 py-2 bg-indigo-500 text-white rounded-xl text-xs font-bold hover:bg-indigo-600 transition disabled:opacity-50 flex items-center justify-center gap-1">
+                          disabled={!questions.length || !!batchProgress || batchStudents.length === 0}
+                          className="flex-1 py-2 bg-purple-500 text-white rounded-xl text-xs font-bold hover:bg-purple-600 transition disabled:opacity-50 flex items-center justify-center gap-1">
                           {batchProgress ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
                           {batchProgress ? `${batchProgress.done}/${batchProgress.total}…` : "Générer TOUS"}
                         </button>
@@ -2387,21 +2797,17 @@ ${nameOv}${buildAnswers(pi)}</div>`;
                       {/* Batch progress bar */}
                       {batchProgress && (
                         <div className="space-y-1">
-                          <div className="flex justify-between text-[9px] text-indigo-600 font-bold">
-                            <span>Génération en cours…</span>
+                          <div className="flex justify-between text-[9px] text-purple-600 font-bold">
+                            <span>Génération séquentielle…</span>
                             <span>{batchProgress.done}/{batchProgress.total} élèves</span>
                           </div>
-                          <div className="h-2 bg-indigo-100 rounded-full overflow-hidden">
-                            <div
-                              className="h-full bg-indigo-500 rounded-full transition-all duration-500"
-                              style={{ width: `${batchProgress.total > 0 ? (batchProgress.done / batchProgress.total) * 100 : 0}%` }}
-                            />
+                          <div className="h-2.5 bg-purple-100 rounded-full overflow-hidden">
+                            <div className="h-full bg-purple-500 rounded-full transition-all duration-500"
+                              style={{ width: `${batchProgress.total > 0 ? (batchProgress.done / batchProgress.total) * 100 : 0}%` }} />
                           </div>
+                          <p className="text-[8px] text-purple-400 text-center">Chaque élève reçoit des réponses uniques adaptées à son niveau</p>
                         </div>
                       )}
-                      <p className="text-[10px] text-slate-400">
-                        {batchStudents.filter(b => b.isDone).length}/{batchStudents.length} élèves générés
-                      </p>
                     </div>
                     <div className="flex justify-between gap-3">
                       <button onClick={() => setStep("import")}
@@ -2977,6 +3383,18 @@ ${nameOv}${buildAnswers(pi)}</div>`;
                       onNameMove={(dx, dy) => setNamePos(p => ({ x: Math.max(0, Math.min(90, p.x + dx)), y: Math.max(0, Math.min(90, p.y + dy)) }))}
                       teacherNote={teacherNote}
                       onTeacherNoteMove={(dx, dy) => setTeacherNote(n => n ? { ...n, x: Math.max(0, Math.min(90, n.x + dx)), y: Math.max(0, Math.min(90, n.y + dy)) } : n)}
+                      gradeMarks={gradeMarks}
+                      onGradeMarkMove={(id, dx, dy) => updateGradeMark(id, {
+                        x: Math.max(0, Math.min(95, (gradeMarks.find(m => m.id === id)?.x ?? 0) + dx)),
+                        y: Math.max(0, Math.min(95, (gradeMarks.find(m => m.id === id)?.y ?? 0) + dy)),
+                      })}
+                      selectedGradeMarkId={selectedGradeMarkId}
+                      onSelectGradeMark={setSelectedGradeMarkId}
+                      artTransform={artTransforms[previewPage]}
+                      onArtUpdate={patch => setArtTransforms(prev => ({
+                        ...prev,
+                        [previewPage]: { ...(prev[previewPage] ?? { x: 0, y: 0, w: 100, h: 100, cropX: 0, cropY: 0, cropW: 100, cropH: 100, rotation: 0 }), ...patch },
+                      }))}
                     />
                   </div>
 
@@ -2991,8 +3409,9 @@ ${nameOv}${buildAnswers(pi)}</div>`;
                           { k: "comments" as const, label: "Prof",  icon: <MessageSquare className="h-3 w-3" /> },
                           { k: "geometry" as const, label: "Géo",   icon: <Triangle className="h-3 w-3" /> },
                           { k: "art"      as const, label: "Art",   icon: <Image className="h-3 w-3" /> },
+                          { k: "grades"   as const, label: "Notes", icon: <Star className="h-3 w-3" /> },
                         ].map(t => (
-                          <button key={t.k} onClick={() => setSidePanel(t.k)}
+                          <button key={t.k} onClick={() => setSidePanel(t.k as any)}
                             className={`flex-1 flex flex-col items-center gap-0.5 py-2 text-[9px] font-bold transition border-r last:border-r-0 border-slate-100
                               ${sidePanel === t.k ? "bg-indigo-500 text-white" : "text-slate-400 hover:bg-slate-50 hover:text-slate-700"}`}>
                             {t.icon}
@@ -3311,27 +3730,200 @@ ${nameOv}${buildAnswers(pi)}</div>`;
                         {sidePanel === "art" && (
                           <div className="space-y-2">
                             <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wide flex items-center gap-1">
-                              <Palette className="h-3 w-3" /> Page art / dessin
+                              <Palette className="h-3 w-3" /> Photo / Dessin — déplaçable
                             </p>
-                            <p className="text-[9px] text-slate-400">Insérez un dessin ou une photo sur cette page.</p>
-                            <label className="block border border-dashed border-slate-200 rounded-xl p-4 text-center cursor-pointer hover:bg-indigo-50 hover:border-indigo-300 transition relative">
+                            <label className="block border-2 border-dashed border-slate-200 rounded-xl p-3 text-center cursor-pointer hover:bg-indigo-50 hover:border-indigo-300 transition relative">
                               <input type="file" accept="image/*" className="absolute inset-0 opacity-0 cursor-pointer"
                                 onChange={e => {
                                   const f = e.target.files?.[0]; if (!f) return;
                                   const r = new FileReader();
-                                  r.onload = ev => setArtImages(prev => ({ ...prev, [previewPage]: ev.target?.result as string }));
+                                  r.onload = ev => {
+                                    setArtImages(prev => ({ ...prev, [previewPage]: ev.target?.result as string }));
+                                    setArtTransforms(prev => ({
+                                      ...prev,
+                                      [previewPage]: { x: 5, y: 5, w: 60, h: 60, cropX: 0, cropY: 0, cropW: 100, cropH: 100, rotation: 0 },
+                                    }));
+                                  };
                                   r.readAsDataURL(f);
                                 }} />
-                              <Image className="h-6 w-6 text-slate-300 mx-auto mb-1" />
-                              <p className="text-[10px] font-semibold text-slate-500">Insérer dessin / photo</p>
+                              <Image className="h-5 w-5 text-slate-300 mx-auto mb-1" />
+                              <p className="text-[9px] font-semibold text-slate-400">{artImages[previewPage] ? "Changer photo" : "Insérer photo / dessin"}</p>
                             </label>
-                            {artImages[previewPage] && (
-                              <div className="space-y-1">
-                                <img src={artImages[previewPage]} alt="Art" className="w-full rounded-lg border border-slate-200" />
-                                <button onClick={() => setArtImages(prev => { const n = { ...prev }; delete n[previewPage]; return n; })}
-                                  className="w-full py-1 border border-red-200 rounded-lg text-[9px] font-semibold text-red-500 hover:bg-red-50 transition">
-                                  Supprimer (page {previewPage + 1})
+                            {artImages[previewPage] && (() => {
+                              const at = artTransforms[previewPage] ?? { x: 5, y: 5, w: 60, h: 60, cropX: 0, cropY: 0, cropW: 100, cropH: 100, rotation: 0 };
+                              return (
+                                <div className="space-y-2">
+                                  <div className="bg-slate-50 rounded-xl border border-slate-200 p-2.5 space-y-2">
+                                    <p className="text-[9px] font-bold text-slate-500">Position & Taille</p>
+                                    <div className="grid grid-cols-2 gap-1.5">
+                                      {[
+                                        { label: "X (%)", val: at.x, key: "x" as const, min: 0, max: 90 },
+                                        { label: "Y (%)", val: at.y, key: "y" as const, min: 0, max: 90 },
+                                        { label: "Larg.(%)", val: at.w, key: "w" as const, min: 5, max: 100 },
+                                        { label: "Haut.(%)", val: at.h, key: "h" as const, min: 5, max: 100 },
+                                      ].map(ctrl => (
+                                        <div key={ctrl.key} className="space-y-0.5">
+                                          <p className="text-[8px] text-slate-400 font-medium">{ctrl.label}</p>
+                                          <input type="number" min={ctrl.min} max={ctrl.max} step={1}
+                                            value={Math.round(ctrl.val)}
+                                            onFocus={e => e.target.select()}
+                                            onChange={e => {
+                                              const v = parseFloat(e.target.value);
+                                              if (!isNaN(v)) setArtTransforms(prev => ({ ...prev, [previewPage]: { ...at, [ctrl.key]: v } }));
+                                            }}
+                                            className="w-full border border-slate-200 rounded px-1.5 py-0.5 text-[9px] focus:outline-none focus:border-indigo-400 bg-white" />
+                                        </div>
+                                      ))}
+                                    </div>
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="text-[9px] text-slate-500 w-12 shrink-0">Rotation</span>
+                                      <input type="range" min={-180} max={180} step={1} value={at.rotation}
+                                        onChange={e => setArtTransforms(prev => ({ ...prev, [previewPage]: { ...at, rotation: parseFloat(e.target.value) } }))}
+                                        className="flex-1 accent-indigo-500 h-1.5" />
+                                      <span className="text-[9px] font-bold text-indigo-600 w-8 text-right">{at.rotation}°</span>
+                                    </div>
+                                    <button onClick={() => setArtTransforms(prev => ({ ...prev, [previewPage]: { x: 5, y: 5, w: 60, h: 60, cropX: 0, cropY: 0, cropW: 100, cropH: 100, rotation: 0 } }))}
+                                      className="w-full py-1 border border-slate-200 rounded text-[9px] font-semibold text-slate-500 hover:bg-slate-100 transition">
+                                      ↺ Réinitialiser position
+                                    </button>
+                                  </div>
+                                  <p className="text-[8px] text-indigo-500">📌 Mode Déplacer → glissez l'image sur la page · ⤡ coin bas-droit pour redimensionner</p>
+                                  <button onClick={() => { setArtImages(prev => { const n = { ...prev }; delete n[previewPage]; return n; }); setArtTransforms(prev => { const n = { ...prev }; delete n[previewPage]; return n; }); }}
+                                    className="w-full py-1 border border-red-200 rounded-lg text-[9px] font-semibold text-red-500 hover:bg-red-50 transition">
+                                    🗑 Supprimer image
+                                  </button>
+                                </div>
+                              );
+                            })()}
+                          </div>
+                        )}
+
+                        {/* Grades */}
+                        {(sidePanel as string) === "grades" && (
+                          <div className="space-y-3">
+                            <div className="flex items-center gap-1.5">
+                              <Star className="h-3.5 w-3.5 text-red-500" />
+                              <p className="text-[10px] font-black text-red-600 uppercase tracking-wide flex-1">Annotations Notation</p>
+                              {gradeMarks.length > 0 && (
+                                <span className="text-[9px] font-bold bg-red-100 text-red-600 px-1.5 py-0.5 rounded-full">
+                                  {gradeMarks.length} total
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[8px] text-slate-400 leading-relaxed">Stylo rouge — ✓ ✗ notes et textes libres. Activez <strong>Mode Déplacer</strong> puis glissez sur la page.</p>
+
+                            {/* Quick-add buttons — 2+3 grid */}
+                            <div className="grid grid-cols-2 gap-1.5">
+                              {[
+                                { type: "check"  as const, label: "✓ Correct",     bg: "bg-emerald-50 border-emerald-300 text-emerald-700 hover:bg-emerald-100", icon: "✓" },
+                                { type: "cross"  as const, label: "✗ Faux",        bg: "bg-red-50 border-red-300 text-red-700 hover:bg-red-100",         icon: "✗" },
+                                { type: "grade"  as const, label: "🔢 Note /8",    bg: "bg-amber-50 border-amber-300 text-amber-700 hover:bg-amber-100",  icon: "N" },
+                                { type: "date"   as const, label: "📅 Date",       bg: "bg-blue-50 border-blue-300 text-blue-700 hover:bg-blue-100",     icon: "D" },
+                              ].map(btn => (
+                                <button key={btn.type}
+                                  onClick={() => addGradeMark(btn.type, previewPage)}
+                                  className={`border rounded-xl py-2.5 text-[10px] font-bold transition active:scale-95 ${btn.bg}`}>
+                                  {btn.label}
                                 </button>
+                              ))}
+                            </div>
+                            <button
+                              onClick={() => addGradeMark("custom", previewPage)}
+                              className="w-full border border-dashed border-slate-300 rounded-xl py-2 text-[10px] font-semibold text-slate-500 hover:border-indigo-300 hover:text-indigo-600 hover:bg-indigo-50 transition flex items-center justify-center gap-1.5">
+                              <Plus className="h-3 w-3" /> Texte libre personnalisé
+                            </button>
+
+                            {/* Existing marks list */}
+                            {gradeMarks.filter(m => m.pageIndex === previewPage).length > 0 && (
+                              <div className="space-y-1.5">
+                                <p className="text-[9px] font-bold text-slate-500 uppercase tracking-wide">Sur cette page ({gradeMarks.filter(m => m.pageIndex === previewPage).length}) :</p>
+                                {gradeMarks.filter(m => m.pageIndex === previewPage).map(m => (
+                                  <div key={m.id}
+                                    onClick={() => setSelectedGradeMarkId(selectedGradeMarkId === m.id ? null : m.id)}
+                                    className={`rounded-xl border p-2 space-y-1.5 cursor-pointer transition
+                                      ${selectedGradeMarkId === m.id
+                                        ? "border-red-400 bg-red-50 shadow-sm"
+                                        : "border-slate-200 bg-white hover:border-red-200 hover:bg-red-50/30"}`}>
+                                    <div className="flex items-center gap-1.5">
+                                      <span style={{ color: m.color, fontSize: 18, fontFamily: "Arial", fontWeight: 900, lineHeight: 1 }}>{m.text}</span>
+                                      <div className="flex-1 min-w-0">
+                                        <p className="text-[9px] font-bold text-slate-600 capitalize truncate">{m.type === "check" ? "Correct ✓" : m.type === "cross" ? "Faux ✗" : m.type === "grade" ? "Note" : m.type === "date" ? "Date" : "Texte"}</p>
+                                        <p className="text-[8px] text-slate-400">x:{m.x.toFixed(0)}% y:{m.y.toFixed(0)}%</p>
+                                      </div>
+                                      <button onClick={e => { e.stopPropagation(); deleteGradeMark(m.id); }}
+                                        className="p-1 rounded-lg hover:bg-red-100 transition shrink-0" title="Supprimer">
+                                        <Trash2 className="h-3 w-3 text-red-400" />
+                                      </button>
+                                    </div>
+                                    {selectedGradeMarkId === m.id && (
+                                      <div className="space-y-2 pt-1.5 border-t border-red-200">
+                                        <div className="flex items-center gap-1.5">
+                                          <span className="text-[8px] text-slate-500 w-10 shrink-0 font-semibold">Texte</span>
+                                          <input value={m.text}
+                                            onChange={e => updateGradeMark(m.id, { text: e.target.value })}
+                                            onFocus={e => e.target.select()}
+                                            onClick={e => e.stopPropagation()}
+                                            className="flex-1 border border-slate-200 rounded-lg px-2 py-1 text-[9px] focus:outline-none focus:border-red-400 bg-white font-bold"
+                                          />
+                                        </div>
+                                        <div className="flex items-center gap-1.5">
+                                          <span className="text-[8px] text-slate-500 w-10 shrink-0 font-semibold">Taille</span>
+                                          <input type="range" min={1.5} max={10} step={0.1} value={m.fontSize}
+                                            onChange={e => updateGradeMark(m.id, { fontSize: parseFloat(e.target.value) })}
+                                            onClick={e => e.stopPropagation()}
+                                            className="flex-1 accent-red-500 h-1.5" />
+                                          <span className="text-[8px] font-black text-red-600 w-7 text-right">{m.fontSize.toFixed(1)}</span>
+                                        </div>
+                                        <div className="flex gap-1.5 flex-wrap">
+                                          {TEACHER_COLORS.map(c => (
+                                            <button key={c.value} onClick={e => { e.stopPropagation(); updateGradeMark(m.id, { color: c.value }); }}
+                                              style={{ background: c.value }}
+                                              className={`w-5 h-5 rounded-full border-2 transition ${m.color === c.value ? "border-slate-700 scale-110 ring-2 ring-offset-1 ring-slate-400" : "border-transparent hover:border-slate-300"}`}
+                                              title={c.label} />
+                                          ))}
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-1">
+                                          <div>
+                                            <p className="text-[7px] text-slate-400 mb-0.5">X (%)</p>
+                                            <input type="number" min={0} max={95} step={1} value={Math.round(m.x)}
+                                              onChange={e => updateGradeMark(m.id, { x: parseFloat(e.target.value) })}
+                                              onClick={e => e.stopPropagation()}
+                                              className="w-full border border-slate-200 rounded px-1.5 py-0.5 text-[9px] focus:outline-none focus:border-red-400 bg-white" />
+                                          </div>
+                                          <div>
+                                            <p className="text-[7px] text-slate-400 mb-0.5">Y (%)</p>
+                                            <input type="number" min={0} max={95} step={1} value={Math.round(m.y)}
+                                              onChange={e => updateGradeMark(m.id, { y: parseFloat(e.target.value) })}
+                                              onClick={e => e.stopPropagation()}
+                                              className="w-full border border-slate-200 rounded px-1.5 py-0.5 text-[9px] focus:outline-none focus:border-red-400 bg-white" />
+                                          </div>
+                                        </div>
+                                        <p className="text-[8px] text-red-500 font-medium flex items-center gap-1">
+                                          <Move className="h-2.5 w-2.5" /> Mode Déplacer → glissez sur la page
+                                        </p>
+                                      </div>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+
+                            {/* All pages summary */}
+                            {gradeMarks.length > 0 && (
+                              <div className="flex items-center justify-between border-t border-slate-100 pt-2">
+                                <span className="text-[8px] text-slate-400">Total toutes pages: {gradeMarks.length}</span>
+                                <button onClick={() => setGradeMarks([])}
+                                  className="text-[8px] font-semibold text-red-400 hover:text-red-600 transition">
+                                  🗑 Tout effacer
+                                </button>
+                              </div>
+                            )}
+
+                            {gradeMarks.filter(m => m.pageIndex === previewPage).length === 0 && (
+                              <div className="py-5 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                                <Star className="h-6 w-6 text-slate-200 mx-auto mb-1.5" />
+                                <p className="text-[9px] text-slate-400 font-semibold">Aucune annotation sur P.{previewPage + 1}</p>
+                                <p className="text-[8px] text-slate-300 mt-0.5">Cliquez un bouton ci-dessus pour ajouter</p>
                               </div>
                             )}
                           </div>

@@ -29,10 +29,12 @@ interface Question {
 // ── Gemini key rotation ───────────────────────────────────────────────────────
 
 function getGeminiKeys(): string[] {
+  // Collect all keys: GEMINI_API_KEY_1 … GEMINI_API_KEY_10 + bare GEMINI_API_KEY
   const names = [
-    "GEMINI_API_KEY_1", "GEMINI_API_KEY_2",
-    "GEMINI_API_KEY_3", "GEMINI_API_KEY_4",
-    "GEMINI_API_KEY",   "GEMINI_KEY",
+    "GEMINI_API_KEY_1",  "GEMINI_API_KEY_2",  "GEMINI_API_KEY_3",
+    "GEMINI_API_KEY_4",  "GEMINI_API_KEY_5",  "GEMINI_API_KEY_6",
+    "GEMINI_API_KEY_7",  "GEMINI_API_KEY_8",  "GEMINI_API_KEY_9",
+    "GEMINI_API_KEY_10", "GEMINI_API_KEY",    "GEMINI_KEY",
   ];
   const keys: string[] = [];
   for (const name of names) {
@@ -58,36 +60,51 @@ function isQuotaError(err: unknown): boolean {
   );
 }
 
-/** Run fn with each key until one succeeds; throws if all are quota-exhausted */
+/**
+ * Run fn rotating through ALL available Gemini keys.
+ * On quota errors wraps around (circular) up to MAX_ROUNDS full rotations.
+ * Throws only when every key has been tried MAX_ROUNDS times without success.
+ */
+const MAX_ROUNDS = 3; // max complete rotations before giving up
+
 async function withKeys<T>(
   fn: (ai: GoogleGenAI, keyIndex: number) => Promise<T>,
   label = ""
 ): Promise<T> {
   const keys = getGeminiKeys();
-  if (!keys.length) throw new Error("Aucune clé Gemini configurée (GEMINI_API_KEY_1…).");
+  if (!keys.length) throw new Error("Aucune clé Gemini configurée (GEMINI_API_KEY_1…GEMINI_API_KEY_10).");
 
   let lastError: unknown;
-  for (let i = 0; i < keys.length; i++) {
-    const ai = new GoogleGenAI({
+  const totalAttempts = keys.length * MAX_ROUNDS;
+
+  for (let attempt = 0; attempt < totalAttempts; attempt++) {
+    const i   = attempt % keys.length;
+    const round = Math.floor(attempt / keys.length) + 1;
+    const ai  = new GoogleGenAI({
       apiKey: keys[i],
       httpOptions: { headers: { "User-Agent": "aistudio-build" } },
     });
     try {
       const result = await fn(ai, i);
-      if (i > 0) console.log(`[${label}] Clé #${i + 1} a réussi`);
+      if (attempt > 0) console.log(`[${label}] Clé #${i + 1} (tour ${round}) a réussi`);
       return result;
     } catch (e: unknown) {
       if (isQuotaError(e)) {
-        console.warn(`[${label}] Clé #${i + 1} quota épuisé → essai clé suivante`);
+        console.warn(`[${label}] Clé #${i + 1} quota épuisé (tour ${round}) → rotation vers clé suivante`);
         lastError = e;
+        // Small backoff at end of each complete rotation
+        if (i === keys.length - 1 && round < MAX_ROUNDS) {
+          await new Promise(r => setTimeout(r, 1500 * round));
+        }
         continue;
       }
       // Non-quota error → rethrow immediately
       throw e;
     }
   }
+
   throw new Error(
-    `Toutes les clés Gemini sont épuisées (quota). Dernière erreur: ${
+    `Toutes les ${keys.length} clés Gemini épuisées après ${MAX_ROUNDS} rotations. Dernière erreur: ${
       (lastError as Record<string, unknown>)?.message ?? String(lastError)
     }`
   );
