@@ -14,12 +14,26 @@ function getGeminiKeys(): string[] {
   }
   return [...new Set(keys)];
 }
-function isQuota(err: any): boolean {
+function isRetryable(err: any): boolean {
   const msg = String(err?.message || err?.status || err || "").toLowerCase();
-  return msg.includes("429") || msg.includes("quota") || msg.includes("resource_exhausted") || msg.includes("rate limit") || err?.status === 429;
+  return (
+    msg.includes("429")               || // quota
+    msg.includes("quota")             ||
+    msg.includes("resource_exhausted")||
+    msg.includes("rate limit")        ||
+    msg.includes("too many requests") ||
+    msg.includes("503")               || // server overloaded / high demand
+    msg.includes("unavailable")       ||
+    msg.includes("high demand")       ||
+    msg.includes("overloaded")        ||
+    msg.includes("spike")             ||
+    msg.includes("service unavailable")||
+    err?.status === 429               ||
+    err?.status === 503
+  );
 }
-const MAX_ROUNDS_DQ = 3;
-async function withKeys<T>(fn: (ai: GoogleGenAI) => Promise<T>): Promise<T> {
+const MAX_ROUNDS_DQ = 4; // increased from 3
+async function withKeys<T>(fn: (ai: GoogleGenAI, round: number) => Promise<T>): Promise<T> {
   const keys = getGeminiKeys();
   if (!keys.length) throw new Error("Aucune clé Gemini configurée.");
   let last: any;
@@ -28,12 +42,17 @@ async function withKeys<T>(fn: (ai: GoogleGenAI) => Promise<T>): Promise<T> {
     const i = attempt % keys.length;
     const round = Math.floor(attempt / keys.length) + 1;
     try {
-      return await fn(new GoogleGenAI({ apiKey: keys[i], httpOptions: { headers: { "User-Agent": "aistudio-build" } } }));
+      return await fn(new GoogleGenAI({ apiKey: keys[i], httpOptions: { headers: { "User-Agent": "aistudio-build" } } }), round);
     } catch (e: any) {
-      if (isQuota(e)) {
-        console.warn(`Gemini key #${i+1} quota (round ${round}) → next`);
+      if (isRetryable(e)) {
+        const is503 = String(e?.message || e || "").toLowerCase().includes("503") ||
+                      String(e?.message || e || "").toLowerCase().includes("unavailable") ||
+                      e?.status === 503;
+        console.warn(`Gemini key #${i+1} ${is503 ? "503/overloaded" : "quota"} (round ${round}) → next`);
         last = e;
-        if (i === keys.length - 1 && round < MAX_ROUNDS_DQ) await new Promise(r => setTimeout(r, 1500 * round));
+        // Longer backoff for 503 (server overloaded) vs 429 (quota)
+        const backoffMs = is503 ? 2500 * round : 1500 * round;
+        if (i === keys.length - 1 && round < MAX_ROUNDS_DQ) await new Promise(r => setTimeout(r, backoffMs));
         continue;
       }
       throw e;
@@ -99,9 +118,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         `Ignorer titres/objectifs/critères. Max 20 questions. JSON: {"questions":[...]}`,
     });
 
-    const rawText = await withKeys(async (ai) => {
+    const rawText = await withKeys(async (ai, round) => {
+      // On round 3+ fall back to gemini-1.5-flash (less loaded during demand spikes)
+      const model = round >= 3 ? "gemini-1.5-flash" : "gemini-2.5-flash";
       const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
+        model,
         contents: parts,
         config: {
           responseMimeType: "application/json",

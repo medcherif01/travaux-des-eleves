@@ -51,12 +51,19 @@ function isQuotaError(err: unknown): boolean {
     err || ""
   ).toLowerCase();
   return (
-    msg.includes("429") ||
-    msg.includes("quota") ||
+    msg.includes("429")                ||
+    msg.includes("quota")              ||
     msg.includes("resource_exhausted") ||
-    msg.includes("rate limit") ||
-    msg.includes("too many requests") ||
-    (err as Record<string, unknown>)?.status === 429
+    msg.includes("rate limit")         ||
+    msg.includes("too many requests")  ||
+    msg.includes("503")                || // server overloaded / high demand
+    msg.includes("unavailable")        ||
+    msg.includes("high demand")        ||
+    msg.includes("overloaded")         ||
+    msg.includes("spike")              ||
+    msg.includes("service unavailable")||
+    (err as Record<string, unknown>)?.status === 429 ||
+    (err as Record<string, unknown>)?.status === 503
   );
 }
 
@@ -65,10 +72,10 @@ function isQuotaError(err: unknown): boolean {
  * On quota errors wraps around (circular) up to MAX_ROUNDS full rotations.
  * Throws only when every key has been tried MAX_ROUNDS times without success.
  */
-const MAX_ROUNDS = 3; // max complete rotations before giving up
+const MAX_ROUNDS = 4; // max complete rotations before giving up (increased for 503 resilience)
 
 async function withKeys<T>(
-  fn: (ai: GoogleGenAI, keyIndex: number) => Promise<T>,
+  fn: (ai: GoogleGenAI, keyIndex: number, round: number) => Promise<T>,
   label = ""
 ): Promise<T> {
   const keys = getGeminiKeys();
@@ -85,20 +92,23 @@ async function withKeys<T>(
       httpOptions: { headers: { "User-Agent": "aistudio-build" } },
     });
     try {
-      const result = await fn(ai, i);
+      const result = await fn(ai, i, round);
       if (attempt > 0) console.log(`[${label}] Clé #${i + 1} (tour ${round}) a réussi`);
       return result;
     } catch (e: unknown) {
       if (isQuotaError(e)) {
-        console.warn(`[${label}] Clé #${i + 1} quota épuisé (tour ${round}) → rotation vers clé suivante`);
+        const eMsg = String((e as Record<string, unknown>)?.message || e || "").toLowerCase();
+        const is503 = eMsg.includes("503") || eMsg.includes("unavailable") || eMsg.includes("high demand") || eMsg.includes("spike");
+        console.warn(`[${label}] Clé #${i + 1} ${is503 ? "503/overloaded" : "quota"} (tour ${round}) → rotation`);
         lastError = e;
-        // Small backoff at end of each complete rotation
+        // Longer backoff for 503 server overload vs 429 quota
         if (i === keys.length - 1 && round < MAX_ROUNDS) {
-          await new Promise(r => setTimeout(r, 1500 * round));
+          const backoffMs = is503 ? 3000 * round : 1500 * round;
+          await new Promise(r => setTimeout(r, backoffMs));
         }
         continue;
       }
-      // Non-quota error → rethrow immediately
+      // Non-retryable error → rethrow immediately
       throw e;
     }
   }
@@ -310,10 +320,11 @@ async function pass1Structured(
 
   const parts = buildPromptParts(questions, name, seed, level, pdfPagesBase64);
 
-  const rawText = await withKeys(async (ai, ki) => {
-    console.log(`[Pass-1] Tentative clé #${ki + 1}`);
+  const rawText = await withKeys(async (ai, ki, round) => {
+    const model = round >= 3 ? "gemini-1.5-flash" : "gemini-2.5-flash";
+    console.log(`[Pass-1] Tentative clé #${ki + 1} modèle ${model}`);
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model,
       contents: parts as any[],
       config: {
         responseMimeType: "application/json",
@@ -394,11 +405,12 @@ async function pass2PlainText(
 
   const parts = buildPromptParts(questions, name, seed, level, pdfPagesBase64);
 
-  const rawText = await withKeys(async (ai, ki) => {
-    console.log(`[Pass-2] Tentative clé #${ki + 1}`);
+  const rawText = await withKeys(async (ai, ki, round) => {
+    const model = round >= 3 ? "gemini-1.5-flash" : "gemini-2.5-flash";
+    console.log(`[Pass-2] Tentative clé #${ki + 1} modèle ${model}`);
     // No responseSchema — Gemini generates freely
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model,
       contents: parts as any[],
       config: {
         temperature: 0.7,
@@ -518,9 +530,10 @@ async function pass3PerQuestion(
     console.log(`[Pass-3] Question ${i + 1}/${questions.length}: "${q.id}"`);
 
     try {
-      const text = await withKeys(async (ai, ki) => {
+      const text = await withKeys(async (ai, ki, round) => {
+        const model = round >= 3 ? "gemini-1.5-flash" : "gemini-2.5-flash";
         const response = await ai.models.generateContent({
-          model: "gemini-2.5-flash",
+          model,
           contents: [
             ...imageParts,
             {

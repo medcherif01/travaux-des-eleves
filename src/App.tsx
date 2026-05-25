@@ -2351,8 +2351,9 @@ export default function App() {
       if (d.success) {
         setMongoOk(!d.offline);
         if (d.students?.length) {
-          // MongoDB returns full hwImageBase64 — use it as hwImage for the session
-          setSavedProfiles(d.students.map((s: any) => ({ ...s, hwImage: s.hwImageBase64 || null })));
+          // MongoDB returns full hwImageBase64 — merge with defaults for safety
+          const def = defaultProfile();
+          setSavedProfiles(d.students.map((s: any) => ({ ...def, ...s, hwImage: s.hwImageBase64 || null })));
           return;
         }
       }
@@ -2360,7 +2361,10 @@ export default function App() {
     // Fallback: localStorage (no images stored there, but profile settings preserved)
     try {
       const loc = localStorage.getItem("student_profiles_v3");
-      if (loc) setSavedProfiles(JSON.parse(loc));
+      if (loc) {
+        const def = defaultProfile();
+        setSavedProfiles((JSON.parse(loc) as StudentProfile[]).map(s => ({ ...def, ...s, hwImage: null })));
+      }
     } catch {}
   }, []);
   useEffect(() => { loadProfiles(); }, [loadProfiles]);
@@ -2954,6 +2958,14 @@ export default function App() {
   const upd = <K extends keyof StudentProfile>(k: K, v: StudentProfile[K]) =>
     setActiveProfile(prev => ({ ...prev, [k]: v }));
 
+  // ── Safe profile loader — fills any missing/undefined fields with defaults ──
+  // Prevents crashes when old profiles (missing new fields) are loaded from DB/LS
+  const safeProfile = (p: StudentProfile): StudentProfile => ({
+    ...defaultProfile(p.name),
+    ...p,
+    hwImage: p.hwImageBase64 || p.hwImage || null,
+  });
+
   // ─────────────────────────────────────────────────────────────────────────
   // RENDER
   // ─────────────────────────────────────────────────────────────────────────
@@ -3249,7 +3261,7 @@ export default function App() {
                   <button onClick={() => {
                     setBatchMode(b => !b);
                     if (!batchMode && batchStudents.length === 0 && savedProfiles.length > 0) {
-                      setBatchStudents([makeBatchStudent({ ...savedProfiles[0], hwImage: savedProfiles[0].hwImageBase64 || null }, criteriaLevel)]);
+                      setBatchStudents([makeBatchStudent(safeProfile(savedProfiles[0]), criteriaLevel)]);
                     }
                   }}
                     className={`flex items-center gap-2 px-4 py-2 border rounded-xl font-bold text-sm transition
@@ -3284,7 +3296,7 @@ export default function App() {
                                     if (isInBatch) {
                                       setBatchStudents(prev => prev.filter(b => b.profile.name !== p.name));
                                     } else {
-                                      setBatchStudents(prev => [...prev, makeBatchStudent({ ...p, hwImage: p.hwImageBase64 || null }, criteriaLevel)]);
+                                      setBatchStudents(prev => [...prev, makeBatchStudent(safeProfile(p), criteriaLevel)]);
                                     }
                                   }}
                                   className={`w-7 h-7 rounded-full flex items-center justify-center font-bold text-xs shrink-0 transition
@@ -3295,7 +3307,7 @@ export default function App() {
                                   style={{ fontFamily: getFontFamily(p.fontKey) }}>{p.name}</span>
                                 {/* Edit profile button */}
                                 <button
-                                  onClick={e => { e.stopPropagation(); setEditProfileTarget({ ...p, hwImage: p.hwImageBase64 || null }); }}
+                                  onClick={e => { e.stopPropagation(); setEditProfileTarget(safeProfile(p)); }}
                                   title="Modifier le profil"
                                   className="p-1 rounded-lg hover:bg-purple-100 text-slate-300 hover:text-purple-600 transition shrink-0">
                                   <Pencil className="h-3 w-3" />
@@ -3324,7 +3336,7 @@ export default function App() {
                           })}
                         </div>
                         <div className="flex gap-2 pt-1 border-t border-purple-100">
-                          <button onClick={() => setBatchStudents(savedProfiles.map(p => makeBatchStudent({ ...p, hwImage: p.hwImageBase64 || null }, criteriaLevel)))}
+                          <button onClick={() => setBatchStudents(savedProfiles.map(p => makeBatchStudent(safeProfile(p), criteriaLevel)))}
                             className="flex-1 py-1.5 bg-purple-500 text-white border border-purple-500 rounded-xl text-xs font-bold hover:bg-purple-600 transition flex items-center justify-center gap-1.5 shadow-sm">
                             <CheckCircle className="h-3 w-3" /> Tout sélectionner
                           </button>
@@ -3428,7 +3440,7 @@ export default function App() {
                           ? <div className="py-8 text-center text-sm text-slate-400 font-medium">Aucun élève enregistré</div>
                           : savedProfiles.map(p => (
                             <div key={p.name}
-                              onClick={() => setActiveProfile({ ...p, hwImage: p.hwImageBase64 || p.hwImage || null })}
+                              onClick={() => setActiveProfile(safeProfile(p))}
                               className={`flex items-center gap-2.5 p-2.5 border rounded-xl cursor-pointer transition group
                                 ${activeProfile.name === p.name ? "border-indigo-300 bg-indigo-50 shadow-sm" : "border-slate-100 hover:border-slate-300 hover:bg-slate-50"}`}>
                               {/* Avatar with font preview */}
@@ -3448,7 +3460,7 @@ export default function App() {
                               <button
                                 onClick={e => {
                                   e.stopPropagation();
-                                  setEditProfileTarget({ ...p, hwImage: p.hwImageBase64 || p.hwImage || null });
+                                  setEditProfileTarget(safeProfile(p));
                                 }}
                                 title="Modifier l'élève"
                                 className="p-1.5 rounded-lg hover:bg-indigo-100 hover:text-indigo-600 text-slate-400 transition shrink-0 opacity-0 group-hover:opacity-100">

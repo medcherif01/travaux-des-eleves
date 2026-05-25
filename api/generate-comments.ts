@@ -15,7 +15,13 @@ function getGeminiKeys(): string[] {
 }
 function isQuota(err: any): boolean {
   const msg = String(err?.message || err?.status || err || "").toLowerCase();
-  return msg.includes("429") || msg.includes("quota") || msg.includes("resource_exhausted") || msg.includes("rate limit") || err?.status === 429;
+  return (
+    msg.includes("429") || msg.includes("quota") || msg.includes("resource_exhausted") ||
+    msg.includes("rate limit") || msg.includes("too many requests") ||
+    msg.includes("503") || msg.includes("unavailable") || msg.includes("high demand") ||
+    msg.includes("overloaded") || msg.includes("spike") ||
+    err?.status === 429 || err?.status === 503
+  );
 }
 async function withKeys<T>(fn: (ai: GoogleGenAI) => Promise<T>): Promise<T> {
   const keys = getGeminiKeys();
