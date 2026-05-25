@@ -2291,6 +2291,22 @@ export default function App() {
   const activeVarSeed      = batchMode ? (activeBatchIdx + 1) * 3 : variantSeed;
   const activeDisplayProfile = batchMode ? (currentBatch?.profile ?? activeProfile) : activeProfile;
 
+  // ── On startup: clear bloated localStorage (old versions stored full base64 images) ──
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("student_profiles_v3");
+      if (raw && raw.length > 500_000) {
+        // Too large — strip all images and re-save lean version
+        const profiles: StudentProfile[] = JSON.parse(raw);
+        const lean = profiles.map(p => ({ ...p, hwImage: null, hwImageBase64: "" }));
+        localStorage.setItem("student_profiles_v3", JSON.stringify(lean));
+      }
+    } catch {
+      // If even reading fails (QuotaError on read is rare but possible), wipe it
+      try { localStorage.removeItem("student_profiles_v3"); } catch {}
+    }
+  }, []);
+
   // PDF.js + Mammoth (Word) loaders
   useEffect(() => {
     if (!(window as any).pdfjsLib) {
@@ -2311,6 +2327,23 @@ export default function App() {
     }
   }, []);
 
+  // ── Save profiles to localStorage — strips full images to avoid QuotaExceededError ─
+  const saveToLocalStorage = async (profiles: StudentProfile[]) => {
+    try {
+      // Strip hwImage/hwImageBase64 from each profile before storing
+      const light = profiles.map(p => ({ ...p, hwImage: null, hwImageBase64: "" }));
+      const json = JSON.stringify(light);
+      localStorage.setItem("student_profiles_v3", json);
+    } catch (e) {
+      // If still too large, clear and retry without any images
+      try {
+        localStorage.removeItem("student_profiles_v3");
+        const minimal = profiles.map(p => ({ ...p, hwImage: null, hwImageBase64: "" }));
+        localStorage.setItem("student_profiles_v3", JSON.stringify(minimal));
+      } catch { /* storage unavailable — rely on MongoDB only */ }
+    }
+  };
+
   const loadProfiles = useCallback(async () => {
     try {
       const r = await fetch("/api/students");
@@ -2318,11 +2351,13 @@ export default function App() {
       if (d.success) {
         setMongoOk(!d.offline);
         if (d.students?.length) {
+          // MongoDB returns full hwImageBase64 — use it as hwImage for the session
           setSavedProfiles(d.students.map((s: any) => ({ ...s, hwImage: s.hwImageBase64 || null })));
           return;
         }
       }
     } catch {}
+    // Fallback: localStorage (no images stored there, but profile settings preserved)
     try {
       const loc = localStorage.getItem("student_profiles_v3");
       if (loc) setSavedProfiles(JSON.parse(loc));
@@ -2333,23 +2368,26 @@ export default function App() {
   const saveProfile = async (p: StudentProfile) => {
     setIsSaving(true);
     try {
+      // Send full image to MongoDB API
       const r = await fetch("/api/students", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...p, hwImageBase64: p.hwImage || "" }),
       });
       const d = await r.json();
       if (d.success) {
-        const saved = d.student ? { ...d.student, hwImage: d.student.hwImageBase64 || null } : p;
+        // Keep full hwImage in React state (for this session), strip for localStorage
+        const saved = d.student ? { ...d.student, hwImage: d.student.hwImageBase64 || p.hwImage || null } : p;
         setSavedProfiles(prev => {
           const next = [saved, ...prev.filter(x => x.name.toLowerCase() !== p.name.toLowerCase())];
-          localStorage.setItem("student_profiles_v3", JSON.stringify(next));
+          saveToLocalStorage(next); // async, fire-and-forget — stripped images
           return next;
         });
       }
     } catch {
+      // Offline fallback — keep profile in state and localStorage (no image in LS)
       setSavedProfiles(prev => {
         const next = [p, ...prev.filter(x => x.name.toLowerCase() !== p.name.toLowerCase())];
-        localStorage.setItem("student_profiles_v3", JSON.stringify(next));
+        saveToLocalStorage(next);
         return next;
       });
     }
@@ -2360,7 +2398,7 @@ export default function App() {
     try { await fetch(`/api/students?name=${encodeURIComponent(name)}`, { method: "DELETE" }); } catch {}
     setSavedProfiles(prev => {
       const n = prev.filter(p => p.name !== name);
-      localStorage.setItem("student_profiles_v3", JSON.stringify(n));
+      saveToLocalStorage(n);
       return n;
     });
   };
