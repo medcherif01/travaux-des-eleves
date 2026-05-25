@@ -2272,6 +2272,92 @@ export default function App() {
   // Art image transforms (drag + resize + crop)
   const [artTransforms, setArtTransforms] = useState<Record<number, ArtTransform>>({});
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // ACTIVE STUDENT — computed first so callbacks below can read stable values
+  // ─────────────────────────────────────────────────────────────────────────
+  const currentBatch        = batchMode ? batchStudents[activeBatchIdx] ?? null : null;
+  const activeAnswers       = batchMode ? (currentBatch?.answers       ?? {})               : answers;
+  const activeComments      = batchMode ? (currentBatch?.comments      ?? [])               : comments;
+  const activeOffsets       = batchMode ? (currentBatch?.offsets       ?? {})               : offsets;
+  const activeVarSeed       = batchMode ? (activeBatchIdx + 1) * 3                          : variantSeed;
+  const activeDisplayProfile= batchMode ? (currentBatch?.profile       ?? activeProfile)    : activeProfile;
+  const activeTeacherNote   = batchMode ? (currentBatch?.teacherNote   ?? null)             : teacherNote;
+  const activeGradeMarks    = batchMode ? (currentBatch?.gradeMarks    ?? [])               : gradeMarks;
+  const activeArtImages     = batchMode ? (currentBatch?.artImages     ?? {})               : artImages;
+  const activeArtTransforms = batchMode ? (currentBatch?.artTransforms ?? {})               : artTransforms;
+  const activeNamePos       = batchMode ? (currentBatch?.namePos       ?? { x: 55, y: 4 }) : namePos;
+  const activeEffects       = batchMode ? (currentBatch?.effects       ?? defaultEffects()) : effects;
+
+  // ── Batch-aware setters — use activeBatchIdx (primitive) as dep, never currentBatch ──
+  // patchBatch: applique un patch uniquement sur l'élève courant (par index, pas par id)
+  // Utilise la forme fonctionnelle de setBatchStudents pour toujours lire le state frais.
+  const patchCurrentBatch = useCallback(<K extends keyof BatchStudent>(
+    key: K,
+    updater: BatchStudent[K] | ((prev: BatchStudent[K]) => BatchStudent[K]),
+  ) => {
+    setBatchStudents(prev => {
+      const idx = activeBatchIdx;
+      if (idx < 0 || idx >= prev.length) return prev;
+      const b = prev[idx];
+      const next = typeof updater === "function"
+        ? (updater as (p: BatchStudent[K]) => BatchStudent[K])(b[key])
+        : updater;
+      if (next === b[key]) return prev; // rien n'a changé
+      const arr = [...prev];
+      arr[idx] = { ...b, [key]: next };
+      return arr;
+    });
+  }, [activeBatchIdx]);
+
+  const setActiveTeacherNote = useCallback((updater: TeacherNote | null | ((prev: TeacherNote | null) => TeacherNote | null)) => {
+    if (batchMode) {
+      patchCurrentBatch("teacherNote", updater as any);
+    } else {
+      setTeacherNote(updater as any);
+    }
+  }, [batchMode, patchCurrentBatch]);
+
+  const setActiveGradeMarks = useCallback((updater: GradeMark[] | ((prev: GradeMark[]) => GradeMark[])) => {
+    if (batchMode) {
+      patchCurrentBatch("gradeMarks", updater as any);
+    } else {
+      setGradeMarks(updater as any);
+    }
+  }, [batchMode, patchCurrentBatch]);
+
+  const setActiveArtImages = useCallback((updater: Record<number, string> | ((prev: Record<number, string>) => Record<number, string>)) => {
+    if (batchMode) {
+      patchCurrentBatch("artImages", updater as any);
+    } else {
+      setArtImages(updater as any);
+    }
+  }, [batchMode, patchCurrentBatch]);
+
+  const setActiveArtTransforms = useCallback((updater: Record<number, ArtTransform> | ((prev: Record<number, ArtTransform>) => Record<number, ArtTransform>)) => {
+    if (batchMode) {
+      patchCurrentBatch("artTransforms", updater as any);
+    } else {
+      setArtTransforms(updater as any);
+    }
+  }, [batchMode, patchCurrentBatch]);
+
+  const setActiveNamePos = useCallback((updater: { x: number; y: number } | ((prev: { x: number; y: number }) => { x: number; y: number })) => {
+    if (batchMode) {
+      patchCurrentBatch("namePos", updater as any);
+    } else {
+      setNamePos(updater as any);
+    }
+  }, [batchMode, patchCurrentBatch]);
+
+  const setActiveEffects = useCallback((updater: PageEffectOverrides | ((prev: PageEffectOverrides) => PageEffectOverrides)) => {
+    if (batchMode) {
+      patchCurrentBatch("effects", updater as any);
+    } else {
+      setEffects(updater as any);
+    }
+  }, [batchMode, patchCurrentBatch]);
+
+  // ── Grade mark helpers ─────────────────────────────────────────────────────
   const handleUpdateShape = useCallback((id: string, patch: Partial<GeometryShape>) => {
     setShapes(prev => prev.map(s => s.id === id ? { ...s, ...patch } : s));
   }, []);
@@ -2288,109 +2374,30 @@ export default function App() {
       fontSize: type === "grade" ? 3.5 : 2.8,
       color: "#dc2626",
     };
-    if (batchMode && currentBatch) {
-      setBatchStudents(prev => prev.map(b => b.id === currentBatch.id
-        ? { ...b, gradeMarks: [...b.gradeMarks, newMark] }
-        : b));
+    if (batchMode) {
+      patchCurrentBatch("gradeMarks", prev => [...(prev as GradeMark[]), newMark]);
     } else {
       setGradeMarks(prev => [...prev, newMark]);
     }
-  }, [batchMode, currentBatch]);
+  }, [batchMode, patchCurrentBatch]);
 
   const updateGradeMark = useCallback((id: string, patch: Partial<GradeMark>) => {
-    if (batchMode && currentBatch) {
-      setBatchStudents(prev => prev.map(b => b.id === currentBatch.id
-        ? { ...b, gradeMarks: b.gradeMarks.map(m => m.id === id ? { ...m, ...patch } : m) }
-        : b));
+    if (batchMode) {
+      patchCurrentBatch("gradeMarks", prev =>
+        (prev as GradeMark[]).map(m => m.id === id ? { ...m, ...patch } : m));
     } else {
       setGradeMarks(prev => prev.map(m => m.id === id ? { ...m, ...patch } : m));
     }
-  }, [batchMode, currentBatch]);
+  }, [batchMode, patchCurrentBatch]);
 
   const deleteGradeMark = useCallback((id: string) => {
-    if (batchMode && currentBatch) {
-      setBatchStudents(prev => prev.map(b => b.id === currentBatch.id
-        ? { ...b, gradeMarks: b.gradeMarks.filter(m => m.id !== id) }
-        : b));
+    if (batchMode) {
+      patchCurrentBatch("gradeMarks", prev =>
+        (prev as GradeMark[]).filter(m => m.id !== id));
     } else {
       setGradeMarks(prev => prev.filter(m => m.id !== id));
     }
-  }, [batchMode, currentBatch]);
-
-  const currentBatch       = batchMode ? batchStudents[activeBatchIdx] ?? null : null;
-  const activeAnswers      = batchMode ? (currentBatch?.answers ?? {}) : answers;
-  const activeComments     = batchMode ? (currentBatch?.comments ?? []) : comments;
-  const activeOffsets      = batchMode ? (currentBatch?.offsets  ?? {}) : offsets;
-  const activeVarSeed      = batchMode ? (activeBatchIdx + 1) * 3 : variantSeed;
-  const activeDisplayProfile = batchMode ? (currentBatch?.profile ?? activeProfile) : activeProfile;
-  // Per-student state isolation: route to currentBatch in batch mode, global state otherwise
-  const activeTeacherNote   = batchMode ? (currentBatch?.teacherNote   ?? null)              : teacherNote;
-  const activeGradeMarks    = batchMode ? (currentBatch?.gradeMarks    ?? [])                : gradeMarks;
-  const activeArtImages     = batchMode ? (currentBatch?.artImages     ?? {})                : artImages;
-  const activeArtTransforms = batchMode ? (currentBatch?.artTransforms ?? {})                : artTransforms;
-  const activeNamePos       = batchMode ? (currentBatch?.namePos       ?? { x: 55, y: 4 })  : namePos;
-  const activeEffects       = batchMode ? (currentBatch?.effects       ?? defaultEffects())  : effects;
-
-  // ── Batch-aware setters ────────────────────────────────────────────────────
-  const setActiveTeacherNote = useCallback((updater: TeacherNote | null | ((prev: TeacherNote | null) => TeacherNote | null)) => {
-    if (batchMode && currentBatch) {
-      setBatchStudents(prev => prev.map(b => b.id === currentBatch.id
-        ? { ...b, teacherNote: typeof updater === "function" ? updater(b.teacherNote) : updater }
-        : b));
-    } else {
-      setTeacherNote(updater as any);
-    }
-  }, [batchMode, currentBatch]);
-
-  const setActiveGradeMarks = useCallback((updater: GradeMark[] | ((prev: GradeMark[]) => GradeMark[])) => {
-    if (batchMode && currentBatch) {
-      setBatchStudents(prev => prev.map(b => b.id === currentBatch.id
-        ? { ...b, gradeMarks: typeof updater === "function" ? updater(b.gradeMarks) : updater }
-        : b));
-    } else {
-      setGradeMarks(updater as any);
-    }
-  }, [batchMode, currentBatch]);
-
-  const setActiveArtImages = useCallback((updater: Record<number, string> | ((prev: Record<number, string>) => Record<number, string>)) => {
-    if (batchMode && currentBatch) {
-      setBatchStudents(prev => prev.map(b => b.id === currentBatch.id
-        ? { ...b, artImages: typeof updater === "function" ? updater(b.artImages) : updater }
-        : b));
-    } else {
-      setArtImages(updater as any);
-    }
-  }, [batchMode, currentBatch]);
-
-  const setActiveArtTransforms = useCallback((updater: Record<number, ArtTransform> | ((prev: Record<number, ArtTransform>) => Record<number, ArtTransform>)) => {
-    if (batchMode && currentBatch) {
-      setBatchStudents(prev => prev.map(b => b.id === currentBatch.id
-        ? { ...b, artTransforms: typeof updater === "function" ? updater(b.artTransforms) : updater }
-        : b));
-    } else {
-      setArtTransforms(updater as any);
-    }
-  }, [batchMode, currentBatch]);
-
-  const setActiveNamePos = useCallback((updater: { x: number; y: number } | ((prev: { x: number; y: number }) => { x: number; y: number })) => {
-    if (batchMode && currentBatch) {
-      setBatchStudents(prev => prev.map(b => b.id === currentBatch.id
-        ? { ...b, namePos: typeof updater === "function" ? updater(b.namePos) : updater }
-        : b));
-    } else {
-      setNamePos(updater as any);
-    }
-  }, [batchMode, currentBatch]);
-
-  const setActiveEffects = useCallback((updater: PageEffectOverrides | ((prev: PageEffectOverrides) => PageEffectOverrides)) => {
-    if (batchMode && currentBatch) {
-      setBatchStudents(prev => prev.map(b => b.id === currentBatch.id
-        ? { ...b, effects: typeof updater === "function" ? updater(b.effects) : updater }
-        : b));
-    } else {
-      setEffects(updater as any);
-    }
-  }, [batchMode, currentBatch]);
+  }, [batchMode, patchCurrentBatch]);
 
   // ── On startup: clear bloated localStorage (old versions stored full base64 images) ──
   useEffect(() => {
@@ -2935,8 +2942,8 @@ export default function App() {
           teacherColor: DEFAULT_TEACHER_COLOR,
           teacherFontSize: DEFAULT_TEACHER_FONTSIZE,
         }));
-        if (batchMode && currentBatch) {
-          setBatchStudents(prev => prev.map(b => b.id === currentBatch.id ? { ...b, comments: nc } : b));
+        if (batchMode) {
+          patchCurrentBatch("comments", nc);
         } else {
           setComments(nc);
         }
@@ -2998,36 +3005,32 @@ ${answersSummary ? `Voici les réponses de l'élève :\n${answersSummary}\n\n` :
   };
 
   const handleOffsetChange = useCallback((id: string, dx: number, dy: number) => {
-    if (batchMode && currentBatch) {
-      setBatchStudents(prev => prev.map(b =>
-        b.id === currentBatch.id
-          ? { ...b, offsets: { ...b.offsets, [id]: { x: (b.offsets[id]?.x || 0) + dx, y: (b.offsets[id]?.y || 0) + dy } } }
-          : b
-      ));
+    if (batchMode) {
+      patchCurrentBatch("offsets", prev => {
+        const p = prev as Record<string, { x: number; y: number }>;
+        return { ...p, [id]: { x: (p[id]?.x || 0) + dx, y: (p[id]?.y || 0) + dy } };
+      });
     } else {
       setOffsets(prev => ({ ...prev, [id]: { x: (prev[id]?.x || 0) + dx, y: (prev[id]?.y || 0) + dy } }));
     }
-  }, [batchMode, currentBatch]);
+  }, [batchMode, patchCurrentBatch]);
 
   const handleCommentDrag = useCallback((qId: string, svgDx: number, svgDy: number) => {
-    if (batchMode && currentBatch) {
-      setBatchStudents(prev => prev.map(b =>
-        b.id === currentBatch.id
-          ? { ...b, comments: b.comments.map(c => c.qId === qId ? { ...c, ox: c.ox + svgDx, oy: c.oy + svgDy } : c) }
-          : b
-      ));
+    if (batchMode) {
+      patchCurrentBatch("comments", prev =>
+        (prev as TeacherComment[]).map(c => c.qId === qId ? { ...c, ox: c.ox + svgDx, oy: c.oy + svgDy } : c));
     } else {
       setComments(prev => prev.map(c => c.qId === qId ? { ...c, ox: c.ox + svgDx, oy: c.oy + svgDy } : c));
     }
-  }, [batchMode, currentBatch]);
+  }, [batchMode, patchCurrentBatch]);
 
   const handleCommentsUpdate = useCallback((nc: TeacherComment[]) => {
-    if (batchMode && currentBatch) {
-      setBatchStudents(prev => prev.map(b => b.id === currentBatch.id ? { ...b, comments: nc } : b));
+    if (batchMode) {
+      patchCurrentBatch("comments", nc);
     } else {
       setComments(nc);
     }
-  }, [batchMode, currentBatch]);
+  }, [batchMode, patchCurrentBatch]);
 
   const printSingle = useCallback((
     pProfile: StudentProfile,
@@ -4020,7 +4023,7 @@ ${answersSummary ? `Voici les réponses de l'élève :\n${answersSummary}\n\n` :
                       <Move className="h-3.5 w-3.5" /> {editMode ? "Déplacement ON" : "Déplacer"}
                     </button>
                     <button onClick={() => {
-                      if (batchMode && currentBatch) setBatchStudents(prev => prev.map(b => b.id === currentBatch.id ? { ...b, offsets: {} } : b));
+                      if (batchMode) patchCurrentBatch("offsets", {});
                       else setOffsets({});
                     }}
                       className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 rounded-lg font-semibold text-xs hover:bg-slate-50 transition">
@@ -4182,7 +4185,7 @@ ${answersSummary ? `Voici les réponses de l'élève :\n${answersSummary}\n\n` :
                                           <button onClick={() => handleOffsetChange(q.id, -10, 0)}
                                             className="w-7 h-7 bg-white border border-slate-200 rounded-lg text-xs font-bold hover:bg-indigo-50 hover:border-indigo-300 flex items-center justify-center transition">←</button>
                                           <button onClick={() => {
-                                            if (batchMode && currentBatch) setBatchStudents(prev => prev.map(b => b.id === currentBatch.id ? { ...b, offsets: { ...b.offsets, [q.id]: { x: 0, y: 0 } } } : b));
+                                            if (batchMode) patchCurrentBatch("offsets", prev => ({ ...(prev as Record<string, { x: number; y: number }>), [q.id]: { x: 0, y: 0 } }));
                                             else setOffsets(prev => ({ ...prev, [q.id]: { x: 0, y: 0 } }));
                                           }}
                                             className="w-7 h-7 bg-indigo-500 text-white border border-indigo-500 rounded-lg text-[9px] font-bold hover:bg-indigo-600 flex items-center justify-center transition">○</button>
@@ -4857,12 +4860,8 @@ ${answersSummary ? `Voici les réponses de l'élève :\n${answersSummary}\n\n` :
                                       value={val}
                                       onChange={e => {
                                         const v = e.target.value;
-                                        if (batchMode && currentBatch) {
-                                          setBatchStudents(prev => prev.map(b =>
-                                            b.id === currentBatch.id
-                                              ? { ...b, answers: { ...b.answers, [q.id]: v } }
-                                              : b
-                                          ));
+                                        if (batchMode) {
+                                          patchCurrentBatch("answers", prev => ({ ...(prev as Record<string, string>), [q.id]: v }));
                                         } else {
                                           setAnswers(prev => ({ ...prev, [q.id]: v }));
                                         }
@@ -4877,12 +4876,8 @@ ${answersSummary ? `Voici les réponses de l'élève :\n${answersSummary}\n\n` :
                                       <button
                                         title="Recentrer sur la page"
                                         onClick={() => {
-                                          if (batchMode && currentBatch) {
-                                            setBatchStudents(prev => prev.map(b =>
-                                              b.id === currentBatch.id
-                                                ? { ...b, offsets: { ...b.offsets, [q.id]: { x: 0, y: 0 } } }
-                                                : b
-                                            ));
+                                          if (batchMode) {
+                                            patchCurrentBatch("offsets", prev => ({ ...(prev as Record<string, { x: number; y: number }>), [q.id]: { x: 0, y: 0 } }));
                                           } else {
                                             setOffsets(prev => ({ ...prev, [q.id]: { x: 0, y: 0 } }));
                                           }
@@ -4893,12 +4888,8 @@ ${answersSummary ? `Voici les réponses de l'élève :\n${answersSummary}\n\n` :
                                         <button
                                           title="Effacer cette réponse"
                                           onClick={() => {
-                                            if (batchMode && currentBatch) {
-                                              setBatchStudents(prev => prev.map(b =>
-                                                b.id === currentBatch.id
-                                                  ? { ...b, answers: { ...b.answers, [q.id]: "" } }
-                                                  : b
-                                              ));
+                                            if (batchMode) {
+                                              patchCurrentBatch("answers", prev => ({ ...(prev as Record<string, string>), [q.id]: "" }));
                                             } else {
                                               setAnswers(prev => ({ ...prev, [q.id]: "" }));
                                             }
