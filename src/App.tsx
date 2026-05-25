@@ -1,5 +1,6 @@
 /**
- * nanobanana PRO v5 — Redesigned UI + Key rotation fix
+ * Les Évaluations Critériées de l'IB — Écoles Internationales Al Kawthar
+ * v6 — Word import · 100% handwriting fidelity · Grade marks · Batch multi-select
  */
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
@@ -193,13 +194,14 @@ function defaultProfile(name = "Élève 1"): StudentProfile {
     name, hwImage: null, hwImageBase64: "", hwImageName: "",
     fontKey: "homemade-apple", inkColor: "#1d3278",
     fontSize: 17, rotationAngle: -0.5, skewAngle: -3,
-    wordDrift: 1.5, letterSpacing: -0.5, messinessIntensity: 2.5,
+    wordDrift: 1.5, letterSpacing: -0.5, messinessIntensity: 3.0,
     enableUnreadableLetters: true, letterCaseChaos: true,
     inkDrySkipping: true, penThickness: 1.5, penType: "ballpoint",
-    enableRatures: true, raturesRate: 0.04,
-    enableBlanco: false, blancoRate: 0.02,
+    // ALL realism effects ON by default for maximum handwriting fidelity
+    enableRatures: true, raturesRate: 0.05,
+    enableBlanco: true,  blancoRate: 0.025,
     enableSmudges: true, enablePressureVar: true,
-    enableLineWobble: true, lineWobbleAmp: 1.8,
+    enableLineWobble: true, lineWobbleAmp: 2.0,
   };
 }
 
@@ -353,8 +355,8 @@ function StepRail({ current, onGoto }: { current: WorkflowStep; onGoto: (s: Work
         <div className="w-10 h-10 rounded-2xl flex items-center justify-center font-black italic text-xl shadow-xl shrink-0"
           style={{ background: "linear-gradient(135deg,#6366f1,#8b5cf6)" }}>nb</div>
         <div>
-          <p className="font-black text-sm leading-none text-white tracking-tight">nanobanana</p>
-          <p className="text-[10px] font-semibold mt-0.5" style={{ color: "rgba(165,180,252,0.7)" }}>PRO — Gemini 2.5</p>
+          <p className="font-black text-xs leading-none text-white tracking-tight">Al Kawthar IB</p>
+          <p className="text-[9px] font-semibold mt-0.5" style={{ color: "rgba(165,180,252,0.7)" }}>Évaluations Critériées</p>
         </div>
       </div>
       {STEPS.map((s, i) => {
@@ -451,7 +453,8 @@ function HandwrittenText({ text, qId, profile, variantSeed, effects }: {
 }) {
   if (!text) return null;
   const fp = profile.fingerprint;
-  const useFP = !!fp && (fp.confidenceScore ?? 0) >= 55;
+  // Lower threshold to 40% for maximum fidelity — any usable fingerprint is applied
+  const useFP = !!fp && (fp.confidenceScore ?? 0) >= 40;
   const baseSeed   = sSeed(profile.name + variantSeed, qId);
   const fontSize   = useFP ? Math.max(11, fp.suggestedSize + (baseSeed * 1.5 - 0.75)) : Math.max(11, profile.fontSize + (baseSeed * 2 - 1));
   const slant      = useFP ? fp.suggestedRotation : profile.skewAngle;
@@ -1845,7 +1848,8 @@ function buildPrintHTML(
   artTransforms?: Record<number, ArtTransform>,
 ): string {
   const fp       = profile.fingerprint;
-  const useFP    = !!fp && (fp.confidenceScore ?? 0) >= 55;
+  // 40% threshold for max fidelity in print output
+  const useFP    = !!fp && (fp.confidenceScore ?? 0) >= 40;
   const fontSize = useFP ? Math.max(11, fp.suggestedSize) : Math.max(11, profile.fontSize);
   const inkCol   = profile.inkColor;
   const fontFam  = getFontFamily(profile.fontKey);
@@ -1945,6 +1949,12 @@ export default function App() {
   const [isPdfLoading, setIsPdfLoading] = useState(false);
   const [usePreloaded, setUsePreloaded] = useState(false);
 
+  // Word document (.docx) editing state
+  const [wordHtml, setWordHtml]           = useState<string>("");
+  const [wordEditing, setWordEditing]     = useState(false);
+  const [wordFileName, setWordFileName]   = useState("");
+  const [wordEditorRef]                   = useState(() => React.createRef<HTMLDivElement>());
+
   const [questions, setQuestions]     = useState<DetectedQuestion[]>([]);
   const [isDetecting, setIsDetecting] = useState(false);
   const [detectErr, setDetectErr]     = useState("");
@@ -2035,17 +2045,24 @@ export default function App() {
   const activeVarSeed      = batchMode ? (activeBatchIdx + 1) * 3 : variantSeed;
   const activeDisplayProfile = batchMode ? (currentBatch?.profile ?? activeProfile) : activeProfile;
 
-  // PDF.js load
+  // PDF.js + Mammoth (Word) loaders
   useEffect(() => {
-    if ((window as any).pdfjsLib) return;
-    const s = document.createElement("script");
-    s.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js";
-    s.async = true;
-    s.onload = () => {
-      (window as any).pdfjsLib.GlobalWorkerOptions.workerSrc =
-        "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js";
-    };
-    document.body.appendChild(s);
+    if (!(window as any).pdfjsLib) {
+      const s = document.createElement("script");
+      s.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js";
+      s.async = true;
+      s.onload = () => {
+        (window as any).pdfjsLib.GlobalWorkerOptions.workerSrc =
+          "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js";
+      };
+      document.body.appendChild(s);
+    }
+    if (!(window as any).mammoth) {
+      const s = document.createElement("script");
+      s.src = "https://unpkg.com/mammoth@1.6.0/mammoth.browser.min.js";
+      s.async = true;
+      document.body.appendChild(s);
+    }
   }, []);
 
   const loadProfiles = useCallback(async () => {
@@ -2114,21 +2131,34 @@ export default function App() {
         const s = d.handwritingStyle as HandwritingFingerprint;
         const fontKey  = FONT_KEY_MAP[s.suggestedFont?.toLowerCase()] ?? "homemade-apple";
         const inkColor = s.suggestedColor?.startsWith("#") ? s.suggestedColor : (COLOR_MAP[s.suggestedColor?.toLowerCase()] ?? activeProfile.inkColor);
+        // 100% fidelity: apply ALL fingerprint parameters + force ALL effects ON
         setActiveProfile(prev => ({
-          ...prev, hwImage: b64, hwImageName: fileName, fontKey, inkColor,
-          fontSize: s.suggestedSize ?? prev.fontSize,
-          skewAngle: s.suggestedRotation ?? prev.skewAngle,
+          ...prev,
+          hwImage: b64, hwImageBase64: b64, hwImageName: fileName,
+          fontKey, inkColor,
+          // Typography from fingerprint
+          fontSize:         Math.max(11, s.suggestedSize ?? prev.fontSize),
+          skewAngle:        s.suggestedRotation   ?? prev.skewAngle,
           messinessIntensity: s.messinessIntensity ?? prev.messinessIntensity,
-          enableUnreadableLetters: s.enableUnreadableLetters ?? prev.enableUnreadableLetters,
-          letterCaseChaos: s.letterCaseChaos ?? prev.letterCaseChaos,
-          penThickness: s.penThickness ?? prev.penThickness,
-          lineWobbleAmp: s.baselineWobbleAmp ?? prev.lineWobbleAmp,
-          raturesRate: s.inferredRaturesRate ?? prev.raturesRate,
-          blancoRate:  s.inferredBlancoRate  ?? prev.blancoRate,
-          enableRatures: (s.inferredRaturesRate ?? 0) > 0.01,
-          enableBlanco:  (s.inferredBlancoRate  ?? 0) > 0.005,
-          enableSmudges: (s.inferredSmudgeFreq  ?? 0) > 0.15,
-          fingerprint: s, analysisDescription: s.analysisDescription, confidenceScore: s.confidenceScore,
+          letterSpacing:    s.letterSpacingEm != null ? s.letterSpacingEm * 17 : prev.letterSpacing,
+          wordDrift:        s.wordSpacingPx != null ? Math.max(0.5, s.wordSpacingPx / 5) : prev.wordDrift,
+          penThickness:     s.penThickness    ?? prev.penThickness,
+          lineWobbleAmp:    s.baselineWobbleAmp ?? prev.lineWobbleAmp,
+          // Character-level effects from fingerprint
+          enableUnreadableLetters: s.enableUnreadableLetters ?? true,
+          letterCaseChaos:         s.letterCaseChaos         ?? true,
+          inkDrySkipping:          (s.inkDrySkipRate ?? 0) > 0.02 ? true : prev.inkDrySkipping,
+          // Realism effects — ALWAYS ON after fingerprint analysis (100% fidelity mode)
+          enableRatures: true,
+          raturesRate:   Math.max(0.02, s.inferredRaturesRate ?? 0.05),
+          enableBlanco:  true,
+          blancoRate:    Math.max(0.015, s.inferredBlancoRate ?? 0.025),
+          enableSmudges: true,
+          enablePressureVar: true,
+          enableLineWobble:  true,
+          fingerprint: s,
+          analysisDescription: s.analysisDescription,
+          confidenceScore: s.confidenceScore,
         }));
       }
     } catch (err) { console.error(err); }
@@ -2137,9 +2167,42 @@ export default function App() {
 
   const handleEvalUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return;
+    // reset on re-upload
     setQuestions([]); setAnswers({}); setUsePreloaded(false);
     setComments([]); setShapes([]); setArtImages({});
-    if (file.type === "application/pdf" || file.name.endsWith(".pdf")) {
+    e.target.value = ""; // allow re-selecting same file
+
+    const isWord = file.name.endsWith(".docx") || file.name.endsWith(".doc") ||
+      file.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+      file.type === "application/msword";
+
+    if (isWord) {
+      // ── Word .docx → HTML via Mammoth ──
+      setIsPdfLoading(true);
+      const reader = new FileReader();
+      reader.onload = async ev => {
+        try {
+          const lib = (window as any).mammoth;
+          if (!lib) {
+            // try loading again
+            await new Promise<void>(res => {
+              const s = document.createElement("script");
+              s.src = "https://unpkg.com/mammoth@1.6.0/mammoth.browser.min.js";
+              s.onload = () => res();
+              document.body.appendChild(s);
+            });
+          }
+          const mm = (window as any).mammoth;
+          if (!mm) { alert("Impossible de charger Mammoth. Vérifiez votre connexion."); setIsPdfLoading(false); return; }
+          const result = await mm.convertToHtml({ arrayBuffer: ev.target?.result as ArrayBuffer });
+          setWordHtml(result.value || "<p>(Document vide)</p>");
+          setWordFileName(file.name);
+          setWordEditing(true);
+        } catch (err) { console.error(err); alert("Erreur lecture Word."); }
+        finally { setIsPdfLoading(false); }
+      };
+      reader.readAsArrayBuffer(file);
+    } else if (file.type === "application/pdf" || file.name.endsWith(".pdf")) {
       setIsPdfLoading(true);
       const reader = new FileReader();
       reader.onload = async ev => {
@@ -2164,12 +2227,92 @@ export default function App() {
       };
       reader.readAsArrayBuffer(file);
     } else {
+      // Image
       const reader = new FileReader();
       reader.onload = ev => {
         setEvalPages([{ base64: ev.target?.result as string, pageNum: 1 }]);
         setStep("students");
       };
       reader.readAsDataURL(file);
+    }
+  };
+
+  /** Convert the live-edited Word HTML (in the contentEditable div) into a page image */
+  const convertWordToImage = async () => {
+    setIsPdfLoading(true);
+    try {
+      const editorDiv = wordEditorRef.current;
+      if (!editorDiv) return;
+      const htmlContent = editorDiv.innerHTML;
+
+      // Build a styled A4 HTML document and render it to canvas via window.print capture trick
+      // We use an iframe + html2canvas-like approach via blob URL
+      const fullHtml = `<!DOCTYPE html><html><head><meta charset="UTF-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Times New Roman', serif; font-size: 12pt; line-height: 1.5;
+    padding: 20mm 20mm 20mm 25mm; background: white; width: 210mm; }
+  h1,h2,h3 { margin: 0.5em 0; }
+  p { margin: 0.3em 0; }
+  table { border-collapse: collapse; width: 100%; margin: 0.5em 0; }
+  td, th { border: 1px solid #999; padding: 4px 8px; }
+  li { margin-left: 1.5em; }
+</style>
+</head><body>${htmlContent}</body></html>`;
+
+      // Use an off-screen iframe to render and capture
+      const blob = new Blob([fullHtml], { type: "text/html" });
+      const url  = URL.createObjectURL(blob);
+      const iframe = document.createElement("iframe");
+      iframe.style.cssText = "position:fixed;top:-9999px;left:-9999px;width:794px;height:1123px;border:0;visibility:hidden;";
+      document.body.appendChild(iframe);
+
+      await new Promise<void>(res => {
+        iframe.onload = () => res();
+        iframe.src = url;
+      });
+
+      // Give fonts a moment to render
+      await new Promise(r => setTimeout(r, 400));
+
+      // Draw iframe content to canvas
+      try {
+        const cv = document.createElement("canvas");
+        cv.width = 794; cv.height = 1123;
+        const ctx = cv.getContext("2d")!;
+        ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, 794, 1123);
+        // Use foreignObject approach
+        const svgData = `<svg xmlns="http://www.w3.org/2000/svg" width="794" height="1123">
+          <foreignObject width="100%" height="100%">
+            <div xmlns="http://www.w3.org/1999/xhtml" style="width:794px;height:1123px;overflow:hidden;background:white;font-family:Times New Roman,serif;font-size:12pt;line-height:1.5;padding:75px 75px 75px 94px;">${htmlContent}</div>
+          </foreignObject>
+        </svg>`;
+        const img = new Image();
+        const svgBlob = new Blob([svgData], { type: "image/svg+xml;charset=utf-8" });
+        const svgUrl = URL.createObjectURL(svgBlob);
+        await new Promise<void>((res, rej) => {
+          img.onload = () => { ctx.drawImage(img, 0, 0); res(); };
+          img.onerror = rej;
+          img.src = svgUrl;
+        });
+        URL.revokeObjectURL(svgUrl);
+        const base64 = cv.toDataURL("image/jpeg", 0.93);
+        setEvalPages([{ base64, pageNum: 1 }]);
+        setPreviewPage(0);
+      } finally {
+        document.body.removeChild(iframe);
+        URL.revokeObjectURL(url);
+      }
+      setWordEditing(false);
+      setStep("students");
+    } catch (err) {
+      console.error("Word→Image error:", err);
+      // Fallback: proceed without image (blank page)
+      setEvalPages([{ base64: "", pageNum: 1 }]);
+      setWordEditing(false);
+      setStep("students");
+    } finally {
+      setIsPdfLoading(false);
     }
   };
 
@@ -2544,8 +2687,8 @@ export default function App() {
         <header className="bg-white/90 backdrop-blur border-b border-slate-200/80 px-4 lg:px-6 py-3 flex items-center justify-between sticky top-0 z-40 shadow-sm">
           <div className="flex items-center gap-2 lg:hidden">
             <div className="w-8 h-8 rounded-xl flex items-center justify-center font-black italic text-white text-sm shadow-md"
-              style={{ background: "linear-gradient(135deg,#6366f1,#8b5cf6)" }}>nb</div>
-            <span className="font-black text-sm text-slate-800">nanobanana PRO</span>
+              style={{ background: "linear-gradient(135deg,#6366f1,#8b5cf6)" }}>IB</div>
+            <span className="font-black text-sm text-slate-800">Al Kawthar — Évaluations IB</span>
           </div>
           <div className="hidden lg:flex items-center gap-2">
             <div className="flex items-center gap-1.5 text-slate-400 text-xs">
@@ -2580,13 +2723,141 @@ export default function App() {
         <main className="flex-1 p-4 lg:p-8 overflow-auto">
           <AnimatePresence mode="wait">
 
+            {/* ══ WORD EDITOR MODAL ══ */}
+            {wordEditing && (
+              <motion.div key="word-editor" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                className="fixed inset-0 bg-black/60 z-50 flex flex-col"
+                style={{ backdropFilter: "blur(4px)" }}>
+                {/* Toolbar */}
+                <div className="bg-white border-b border-slate-200 px-4 py-2.5 flex items-center gap-2 flex-wrap shrink-0 shadow-lg">
+                  <div className="flex items-center gap-2 mr-2">
+                    <div className="w-8 h-8 rounded-lg flex items-center justify-center font-black text-white text-xs"
+                      style={{ background: "linear-gradient(135deg,#2563eb,#1d4ed8)" }}>W</div>
+                    <div>
+                      <p className="text-xs font-bold text-slate-800 leading-none truncate max-w-48">{wordFileName}</p>
+                      <p className="text-[9px] text-slate-400 mt-0.5">Éditeur Word intégré — modifiez avant de convertir</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 border-l border-slate-200 pl-2">
+                    {/* Text formatting toolbar */}
+                    {[
+                      { cmd: "bold",          label: <strong className="text-xs">G</strong>, title: "Gras (Ctrl+B)" },
+                      { cmd: "italic",        label: <em className="text-xs">I</em>,        title: "Italique (Ctrl+I)" },
+                      { cmd: "underline",     label: <u className="text-xs">S</u>,          title: "Souligné (Ctrl+U)" },
+                    ].map(b => (
+                      <button key={b.cmd}
+                        onMouseDown={e => { e.preventDefault(); document.execCommand(b.cmd); }}
+                        title={b.title}
+                        className="w-7 h-7 rounded border border-slate-200 hover:bg-slate-100 flex items-center justify-center transition">
+                        {b.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-1 border-l border-slate-200 pl-2">
+                    {[
+                      { cmd: "justifyLeft",   icon: "⬅", title: "Aligner gauche" },
+                      { cmd: "justifyCenter", icon: "☰", title: "Centrer" },
+                      { cmd: "justifyRight",  icon: "➡", title: "Aligner droite" },
+                    ].map(b => (
+                      <button key={b.cmd}
+                        onMouseDown={e => { e.preventDefault(); document.execCommand(b.cmd); }}
+                        title={b.title}
+                        className="w-7 h-7 rounded border border-slate-200 hover:bg-slate-100 flex items-center justify-center text-xs transition">
+                        {b.icon}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-1 border-l border-slate-200 pl-2">
+                    {[
+                      { cmd: "insertUnorderedList", icon: "•≡", title: "Liste à puces" },
+                      { cmd: "insertOrderedList",   icon: "1≡", title: "Liste numérotée" },
+                      { cmd: "outdent",             icon: "←", title: "Réduire retrait" },
+                      { cmd: "indent",              icon: "→", title: "Augmenter retrait" },
+                    ].map(b => (
+                      <button key={b.cmd}
+                        onMouseDown={e => { e.preventDefault(); document.execCommand(b.cmd); }}
+                        title={b.title}
+                        className="w-7 h-7 rounded border border-slate-200 hover:bg-slate-100 flex items-center justify-center text-[10px] font-bold transition">
+                        {b.icon}
+                      </button>
+                    ))}
+                  </div>
+                  {/* Font size */}
+                  <div className="flex items-center gap-1 border-l border-slate-200 pl-2">
+                    <span className="text-[10px] text-slate-500">Taille</span>
+                    <select className="border border-slate-200 rounded px-1 py-0.5 text-xs focus:outline-none"
+                      onChange={e => document.execCommand("fontSize", false, e.target.value)}>
+                      {["1","2","3","4","5","6","7"].map(v => <option key={v} value={v}>{["8","10","12","14","18","24","36"][+v-1]}pt</option>)}
+                    </select>
+                  </div>
+                  {/* Line height */}
+                  <div className="flex items-center gap-1 border-l border-slate-200 pl-2">
+                    <span className="text-[10px] text-slate-500 shrink-0">Interligne</span>
+                    <select className="border border-slate-200 rounded px-1 py-0.5 text-xs focus:outline-none"
+                      onChange={e => {
+                        if (wordEditorRef.current) wordEditorRef.current.style.lineHeight = e.target.value;
+                      }}>
+                      {["1.0","1.15","1.5","2.0","2.5","3.0"].map(v => <option key={v} value={v}>{v}</option>)}
+                    </select>
+                  </div>
+                  {/* Delete selection */}
+                  <button
+                    onMouseDown={e => { e.preventDefault(); document.execCommand("delete"); }}
+                    title="Supprimer la sélection"
+                    className="w-7 h-7 rounded border border-red-200 text-red-500 hover:bg-red-50 flex items-center justify-center transition border-l border-l-slate-200 ml-1">
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                  <div className="ml-auto flex items-center gap-2">
+                    <button onClick={() => { setWordEditing(false); setWordHtml(""); }}
+                      className="px-3 py-1.5 border border-slate-200 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-50 transition">
+                      ✕ Annuler
+                    </button>
+                    <button onClick={convertWordToImage} disabled={isPdfLoading}
+                      className="px-4 py-1.5 bg-indigo-500 text-white rounded-lg text-xs font-bold hover:bg-indigo-600 transition disabled:opacity-50 flex items-center gap-1.5 shadow-sm">
+                      {isPdfLoading ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <ArrowRight className="h-3.5 w-3.5" />}
+                      Convertir & Continuer
+                    </button>
+                  </div>
+                </div>
+                {/* A4 editor area */}
+                <div className="flex-1 overflow-auto bg-slate-200 p-6">
+                  <div className="mx-auto shadow-2xl" style={{ width: 794, minHeight: 1123 }}>
+                    <div
+                      ref={wordEditorRef}
+                      contentEditable
+                      suppressContentEditableWarning
+                      dangerouslySetInnerHTML={{ __html: wordHtml }}
+                      style={{
+                        width: 794, minHeight: 1123,
+                        background: "#fff",
+                        padding: "75px 75px 75px 94px",
+                        fontFamily: "Times New Roman, serif",
+                        fontSize: 12,
+                        lineHeight: "1.5",
+                        outline: "none",
+                        boxSizing: "border-box",
+                        color: "#000",
+                      }}
+                      className="focus:ring-0 word-editor-content"
+                    />
+                  </div>
+                </div>
+                {/* Status bar */}
+                <div className="bg-white border-t border-slate-200 px-4 py-1.5 flex items-center gap-4 text-[10px] text-slate-500 shrink-0">
+                  <span>📄 A4 · Format Word</span>
+                  <span>✏️ Cliquez pour éditer · Sélectionnez du texte pour le formater</span>
+                  <span className="ml-auto">Ctrl+Z Annuler · Ctrl+A Tout sélectionner · Suppr Effacer</span>
+                </div>
+              </motion.div>
+            )}
+
             {/* ══ STEP 1 — IMPORT ══ */}
-            {step === "import" && (
+            {step === "import" && !wordEditing && (
               <motion.div key="import" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -12 }}
                 className="max-w-2xl mx-auto space-y-5">
                 <div>
                   <h2 className="text-2xl font-black text-slate-900">Importer l'évaluation</h2>
-                  <p className="text-slate-500 text-sm mt-1">PDF multipage, image, ou fiche préchargée</p>
+                  <p className="text-slate-500 text-sm mt-1">PDF multipage · Word (.docx) · Image</p>
                 </div>
 
                 {/* Quick guide */}
@@ -2596,7 +2867,7 @@ export default function App() {
                   </p>
                   <div className="grid grid-cols-3 gap-3">
                     {[
-                      { n: "1", t: "Importez", d: "PDF ou image d'évaluation" },
+                      { n: "1", t: "Importez", d: "PDF, Word ou image" },
                       { n: "2", t: "Gemini détecte", d: "Les questions automatiquement" },
                       { n: "3", t: "Réponses générées", d: "En écriture manuscrite réaliste" },
                     ].map(s => (
@@ -2609,28 +2880,53 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Upload zone */}
-                <label className="block border-2 border-dashed border-slate-300 rounded-2xl p-10 text-center bg-white cursor-pointer hover:border-indigo-400 hover:bg-indigo-50/50 transition-all group relative">
-                  <input type="file" accept="application/pdf,image/*" onChange={handleEvalUpload} className="absolute inset-0 opacity-0 cursor-pointer w-full h-full" />
-                  {isPdfLoading ? (
-                    <div className="flex flex-col items-center gap-3">
-                      <div className="w-14 h-14 rounded-2xl bg-indigo-100 flex items-center justify-center">
-                        <RefreshCw className="h-7 w-7 text-indigo-500 animate-spin" />
+                {/* Two upload zones side by side */}
+                <div className="grid grid-cols-2 gap-3">
+                  {/* PDF / Image */}
+                  <label className="flex flex-col border-2 border-dashed border-slate-300 rounded-2xl p-6 text-center bg-white cursor-pointer hover:border-indigo-400 hover:bg-indigo-50/50 transition-all group relative">
+                    <input type="file" accept="application/pdf,image/*" onChange={handleEvalUpload} className="absolute inset-0 opacity-0 cursor-pointer w-full h-full" />
+                    {isPdfLoading && !wordEditing ? (
+                      <div className="flex flex-col items-center gap-2 flex-1 justify-center">
+                        <RefreshCw className="h-8 w-8 text-indigo-500 animate-spin" />
+                        <p className="font-bold text-indigo-600 text-sm">Traitement…</p>
                       </div>
-                      <p className="font-bold text-indigo-600">Traitement PDF en cours…</p>
-                      <p className="text-xs text-indigo-400">Conversion de chaque page en image…</p>
-                    </div>
-                  ) : (
-                    <div className="flex flex-col items-center gap-3">
-                      <div className="w-16 h-16 rounded-2xl bg-slate-100 group-hover:bg-indigo-100 flex items-center justify-center transition-colors">
-                        <Upload className="h-8 w-8 text-slate-400 group-hover:text-indigo-500 transition-colors" />
+                    ) : (
+                      <div className="flex flex-col items-center gap-2 flex-1 justify-center">
+                        <div className="w-12 h-12 rounded-xl bg-red-100 group-hover:bg-red-200 flex items-center justify-center transition-colors">
+                          <FileText className="h-6 w-6 text-red-500" />
+                        </div>
+                        <div>
+                          <p className="font-bold text-slate-700 text-sm">PDF / Image</p>
+                          <p className="text-[10px] text-slate-400 mt-0.5">PDF multipage · PNG · JPG · WebP</p>
+                        </div>
+                      </div>
+                    )}
+                  </label>
+
+                  {/* Word .docx */}
+                  <label className="flex flex-col border-2 border-dashed border-blue-200 rounded-2xl p-6 text-center bg-white cursor-pointer hover:border-blue-400 hover:bg-blue-50/50 transition-all group relative">
+                    <input type="file" accept=".docx,.doc,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword"
+                      onChange={handleEvalUpload} className="absolute inset-0 opacity-0 cursor-pointer w-full h-full" />
+                    <div className="flex flex-col items-center gap-2 flex-1 justify-center">
+                      <div className="w-12 h-12 rounded-xl bg-blue-100 group-hover:bg-blue-200 flex items-center justify-center transition-colors">
+                        <div className="font-black text-blue-600 text-lg">W</div>
                       </div>
                       <div>
-                        <p className="font-bold text-slate-700 text-base">Cliquez ou glissez votre fichier ici</p>
-                        <p className="text-sm text-slate-400 mt-1">PDF multipage · PNG · JPG · WebP</p>
+                        <p className="font-bold text-slate-700 text-sm">Word (.docx)</p>
+                        <p className="text-[10px] text-slate-400 mt-0.5">Éditable · Espacement · Interligne</p>
                       </div>
+                      <span className="text-[9px] font-bold text-blue-600 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-full">Éditeur intégré</span>
                     </div>
-                  )}
+                  </label>
+                </div>
+
+                {/* Or drag anything */}
+                <label className="block border-2 border-dashed border-slate-200 rounded-xl py-4 text-center bg-white cursor-pointer hover:border-indigo-300 hover:bg-indigo-50/30 transition group relative">
+                  <input type="file" accept="application/pdf,image/*,.docx,.doc" onChange={handleEvalUpload} className="absolute inset-0 opacity-0 cursor-pointer w-full h-full" />
+                  <div className="flex items-center justify-center gap-2">
+                    <Upload className="h-4 w-4 text-slate-400 group-hover:text-indigo-500 transition" />
+                    <p className="text-sm text-slate-400 font-medium">ou glissez-déposez n'importe quel fichier ici</p>
+                  </div>
                 </label>
 
                 {/* Preloaded */}
