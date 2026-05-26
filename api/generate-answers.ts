@@ -2,18 +2,23 @@
  * nanobanana PRO — /api/generate-answers
  * Vercel serverless function
  *
- * Architecture:
- *   Pass 1 — structured JSON via responseSchema (fastest, most reliable)
- *   Pass 2 — plain-text prompt asking for JSON (no schema → Gemini free to fill keys)
- *   Pass 3 — per-question plain-text calls (nuclear fallback)
+ * Architecture (speed-optimised, dual-provider):
+ *   Provider A — Groq (llama-3.3-70b / mixtral) — FREE, 14 400 req/day, ~1-3 s
+ *   Provider B — Gemini 2.5 Flash / 1.5 Flash    — key rotation, schema, reliable
  *
- * Both passes rotate through all available Gemini API keys on quota errors.
+ *   Pass 0 — Groq fast-text (no image, text-only questions)     ← NEW, fastest
+ *   Pass 1 — Gemini structured JSON via responseSchema
+ *   Pass 2 — Gemini plain-text (no schema)
+ *   Pass 3 — Gemini per-question nuclear fallback
+ *
+ * Parallel page processing: questions grouped by pageIndex, pages run concurrently.
  * NEVER returns { success: true, answers: {} } — always validates before responding.
  */
 
 import { GoogleGenAI, Type } from "@google/genai";
 import mongoose from "mongoose";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
+import https from "https";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -42,6 +47,154 @@ function getGeminiKeys(): string[] {
     if (v && v !== "MY_GEMINI_API_KEY" && v.trim().length > 10) keys.push(v.trim());
   }
   return [...new Set(keys)];
+}
+
+// ── Groq key rotation ─────────────────────────────────────────────────────────
+
+function getGroqKeys(): string[] {
+  const names = [
+    "GROQ_API_KEY_1", "GROQ_API_KEY_2", "GROQ_API_KEY_3",
+    "GROQ_API_KEY_4", "GROQ_API_KEY_5", "GROQ_API_KEY",
+  ];
+  const keys: string[] = [];
+  for (const name of names) {
+    const v = process.env[name];
+    if (v && v.trim().length > 10) keys.push(v.trim());
+  }
+  return [...new Set(keys)];
+}
+
+/** Call Groq REST API directly (no SDK needed — just HTTPS JSON) */
+async function groqChat(
+  apiKey: string,
+  model: string,
+  systemPrompt: string,
+  userPrompt: string,
+  timeoutMs = 20_000
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({
+      model,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user",   content: userPrompt   },
+      ],
+      temperature: 0.7,
+      max_tokens: 2048,
+      response_format: { type: "json_object" },
+    });
+
+    const timer = setTimeout(() => reject(new Error("Groq timeout")), timeoutMs);
+
+    const req = https.request(
+      {
+        hostname: "api.groq.com",
+        path: "/openai/v1/chat/completions",
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Length": Buffer.byteLength(body),
+        },
+      },
+      (res) => {
+        let data = "";
+        res.on("data", (chunk: Buffer) => { data += chunk.toString(); });
+        res.on("end", () => {
+          clearTimeout(timer);
+          try {
+            const json = JSON.parse(data);
+            if (json.error) { reject(new Error(json.error.message || JSON.stringify(json.error))); return; }
+            resolve(json.choices?.[0]?.message?.content ?? "");
+          } catch (e) {
+            reject(new Error("Groq JSON parse error: " + data.slice(0, 200)));
+          }
+        });
+      }
+    );
+    req.on("error", (e: Error) => { clearTimeout(timer); reject(e); });
+    req.write(body);
+    req.end();
+  });
+}
+
+// ── Pass 0: Groq ultra-fast (text-only, ~1-3 s) ──────────────────────────────
+
+async function pass0Groq(
+  questions: Question[],
+  name: string,
+  seed: number,
+  level: string,
+  lang = "fr"
+): Promise<Record<string, string> | null> {
+  const groqKeys = getGroqKeys();
+  if (!groqKeys.length) return null; // no Groq keys configured
+
+  console.log("[Pass-0-Groq] Démarrage génération Groq ultra-rapide");
+
+  const isEn = lang.startsWith("en");
+  const levelDescs = LEVEL_DESC[isEn ? "en" : "fr"];
+  const levelDesc  = levelDescs[level] || levelDescs["5-6"];
+  const ids        = questions.map(q => `"${q.id}"`).join(", ");
+  const qLines     = questions
+    .map((q, i) => `  [${i + 1}] KEY="${q.id}" | Q: "${q.text}"`)
+    .join("\n");
+
+  const system = isEn
+    ? `You are an AI that generates realistic student answers for school evaluations. Always respond with valid JSON only.`
+    : `Tu es une IA qui génère des réponses réalistes d'élèves pour des évaluations scolaires. Réponds toujours en JSON valide uniquement.`;
+
+  const user = isEn
+    ? `Play the role of student "${name}" (variant ${seed}). ${levelDesc}\n\nRULES:\n1. Unique answers specific to "${name}" (variant ${seed})\n2. Plain text, NO markdown\n3. Answer in ENGLISH only, natural student style\n4. Answer ALL ${questions.length} questions\n\nQUESTIONS:\n${qLines}\n\n⚠️ Keys MUST be EXACTLY: ${ids}\nReturn JSON: {"answers": {"${questions[0]?.id}": "answer", ...}}`
+    : `Joue le rôle de l'élève "${name}" (variante ${seed}). ${levelDesc}\n\nRÈGLES:\n1. Réponses UNIQUES propres à "${name}" (variante ${seed})\n2. Texte brut, SANS markdown\n3. En FRANÇAIS uniquement, style naturel d'élève\n4. Réponds à TOUTES les ${questions.length} questions\n\nQUESTIONS:\n${qLines}\n\n⚠️ Les clés DOIVENT ÊTRE EXACTEMENT: ${ids}\nRetourne JSON: {"answers": {"${questions[0]?.id}": "réponse", ...}}`;
+
+  // Try Groq models in order: fast → reliable
+  const GROQ_MODELS = [
+    "llama-3.3-70b-versatile",
+    "llama3-70b-8192",
+    "mixtral-8x7b-32768",
+    "llama3-8b-8192",
+  ];
+
+  for (let ki = 0; ki < groqKeys.length; ki++) {
+    for (const model of GROQ_MODELS) {
+      try {
+        console.log(`[Pass-0-Groq] Clé #${ki + 1}, modèle ${model}`);
+        const raw = await groqChat(groqKeys[ki], model, system, user, 18_000);
+        if (!raw || raw.length < 5) continue;
+
+        const parsed = safeExtractJson(raw);
+        if (!parsed) continue;
+
+        let rawAnswers: Record<string, unknown> = {};
+        if (parsed.answers && typeof parsed.answers === "object" && !Array.isArray(parsed.answers)) {
+          rawAnswers = parsed.answers as Record<string, unknown>;
+        } else {
+          const nonAnswer = new Set(["answers", "success", "error", "questions"]);
+          rawAnswers = Object.fromEntries(Object.entries(parsed).filter(([k]) => !nonAnswer.has(k)));
+        }
+
+        if (Object.keys(rawAnswers).length === 0) continue;
+
+        const mapped = mapAnswersToQuestions(rawAnswers, questions);
+        if (countValid(mapped) > 0) {
+          console.log(`[Pass-0-Groq] ✅ ${countValid(mapped)}/${questions.length} réponses via ${model}`);
+          return mapped;
+        }
+      } catch (e: unknown) {
+        const msg = ((e as Record<string, unknown>)?.message ?? String(e)).toString().toLowerCase();
+        if (msg.includes("rate") || msg.includes("429") || msg.includes("quota") || msg.includes("limit")) {
+          console.warn(`[Pass-0-Groq] Clé #${ki + 1} ${model} quota → prochaine clé/modèle`);
+          continue;
+        }
+        console.warn(`[Pass-0-Groq] Erreur ${model}:`, msg.slice(0, 100));
+        // try next model
+      }
+    }
+  }
+
+  console.warn("[Pass-0-Groq] Toutes les clés Groq épuisées ou sans résultat → fallback Gemini");
+  return null;
 }
 
 function isQuotaError(err: unknown): boolean {
@@ -717,65 +870,108 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   console.log("[generate-answers] Question IDs:", questions.map(q => q.id));
 
   // ── Demo mode ──────────────────────────────────────────────────────────────
-  const keys = getGeminiKeys();
-  if (!keys.length) {
+  const geminiKeys = getGeminiKeys();
+  const groqKeys   = getGroqKeys();
+  if (!geminiKeys.length && !groqKeys.length) {
     console.log("[generate-answers] Mode DÉMO (aucune clé API)");
     const answers = buildDemoAnswers(questions, level, seed);
     return res.status(200).json({ success: true, answers, isDemo: true });
   }
 
-  // ── Pass 1: structured JSON via responseSchema ─────────────────────────────
+  // ── PARALLEL PAGE PROCESSING ───────────────────────────────────────────────
+  // Group questions by pageIndex — each page runs independently in parallel
+  const pageIndexes = [...new Set(questions.map(q => q.pageIndex))].sort();
+  const questionsByPage: Record<number, Question[]> = {};
+  for (const pi of pageIndexes) {
+    questionsByPage[pi] = questions.filter(q => q.pageIndex === pi);
+  }
+  const isMultiPage = pageIndexes.length > 1;
+
+  console.log(`[generate-answers] Pages: ${pageIndexes.length}, parallel=${isMultiPage}`);
+
+  // For each page, run passes in order: Groq(0) → Gemini P1 → P2 → P3
+  async function generateForPage(
+    pageQs: Question[],
+    pageIdx: number
+  ): Promise<Record<string, string>> {
+    const pagePages = pages[pageIdx] ? [pages[pageIdx]] : pages; // prefer per-page image
+    const label = `page${pageIdx}`;
+
+    // ── Pass 0: Groq (ultra-fast, free, text-only) ──────────────────────────
+    if (groqKeys.length > 0) {
+      try {
+        const g = await pass0Groq(pageQs, name, seed, level, lang);
+        if (g && countValid(g) > 0) {
+          console.log(`[${label}] ✅ Pass-0-Groq: ${countValid(g)} réponses`);
+          return g;
+        }
+      } catch (e) {
+        console.warn(`[${label}] Pass-0-Groq exception:`, (e as Error)?.message?.slice(0, 80));
+      }
+    }
+
+    if (!geminiKeys.length) {
+      // Only Groq was available and it failed — return empty
+      return {};
+    }
+
+    // ── Pass 1: Gemini structured JSON ─────────────────────────────────────
+    let ans: Record<string, string> | null = null;
+    try {
+      ans = await pass1Structured(pageQs, name, seed, level, pagePages, lang);
+      if (ans && countValid(ans) > 0) {
+        console.log(`[${label}] ✅ Pass-1-Gemini: ${countValid(ans)} réponses`);
+        return ans;
+      }
+    } catch (e) {
+      console.error(`[${label}] Pass-1 exception:`, (e as Error)?.message?.slice(0, 80));
+    }
+
+    // ── Pass 2: Gemini plain-text ───────────────────────────────────────────
+    try {
+      ans = await pass2PlainText(pageQs, name, seed, level, pagePages, lang);
+      if (ans && countValid(ans) > 0) {
+        console.log(`[${label}] ✅ Pass-2-Gemini: ${countValid(ans)} réponses`);
+        return ans;
+      }
+    } catch (e) {
+      console.error(`[${label}] Pass-2 exception:`, (e as Error)?.message?.slice(0, 80));
+    }
+
+    // ── Pass 3: Gemini per-question nuclear ─────────────────────────────────
+    try {
+      ans = await pass3PerQuestion(pageQs, name, seed, level, pagePages, lang);
+      if (ans && countValid(ans) > 0) {
+        console.log(`[${label}] ✅ Pass-3-Gemini: ${countValid(ans)} réponses`);
+        return ans;
+      }
+    } catch (e) {
+      console.error(`[${label}] Pass-3 exception:`, (e as Error)?.message?.slice(0, 80));
+    }
+
+    return {};
+  }
+
+  // Run all pages in PARALLEL (major speed gain for multi-page evals)
   let answers: Record<string, string> | null = null;
-
   try {
-    answers = await pass1Structured(questions, name, seed, level, pages, lang);
-    if (answers && countValid(answers) > 0) {
-      console.log(`[generate-answers] Pass-1 réussit: ${countValid(answers)} réponses`);
-    } else {
-      console.warn("[generate-answers] Pass-1 insuffisant, passage à Pass-2");
-      answers = null;
-    }
-  } catch (e: unknown) {
-    console.error("[generate-answers] Pass-1 exception:", (e as Record<string, unknown>)?.message ?? e);
-    answers = null;
-  }
-
-  // ── Pass 2: plain-text (no schema) ────────────────────────────────────────
-  if (!answers) {
-    try {
-      answers = await pass2PlainText(questions, name, seed, level, pages, lang);
-      if (answers && countValid(answers) > 0) {
-        console.log(`[generate-answers] Pass-2 réussit: ${countValid(answers)} réponses`);
-      } else {
-        console.warn("[generate-answers] Pass-2 insuffisant, passage à Pass-3");
-        answers = null;
-      }
-    } catch (e: unknown) {
-      console.error("[generate-answers] Pass-2 exception:", (e as Record<string, unknown>)?.message ?? e);
-      answers = null;
-    }
-  }
-
-  // ── Pass 3: per-question nuclear fallback ─────────────────────────────────
-  if (!answers) {
-    try {
-      answers = await pass3PerQuestion(questions, name, seed, level, pages, lang);
-      if (answers && countValid(answers) > 0) {
-        console.log(`[generate-answers] Pass-3 réussit: ${countValid(answers)} réponses`);
-      } else {
-        answers = null;
-      }
-    } catch (e: unknown) {
-      console.error("[generate-answers] Pass-3 exception:", (e as Record<string, unknown>)?.message ?? e);
-      answers = null;
-    }
+    const pageResults = await Promise.all(
+      pageIndexes.map(pi => generateForPage(questionsByPage[pi], pi))
+    );
+    // Merge all page results
+    const merged: Record<string, string> = {};
+    for (const r of pageResults) Object.assign(merged, r);
+    if (countValid(merged) > 0) answers = merged;
+  } catch (e) {
+    console.error("[generate-answers] Parallel execution error:", (e as Error)?.message);
   }
 
   // ── STRICT validation: NEVER return success with 0 answers ────────────────
   if (!answers || countValid(answers) === 0) {
+    const providers = [geminiKeys.length ? "Gemini" : "", groqKeys.length ? "Groq" : ""].filter(Boolean).join(" + ");
     const msg =
-      "Gemini n'a produit aucune réponse exploitable après 3 passes (structurée + texte libre + par question). " +
-      "Vérifiez que vos clés Gemini ne sont pas toutes en quota.";
+      `Aucune réponse exploitable après toutes les passes (${providers}). ` +
+      "Vérifiez vos clés API (GEMINI_API_KEY_1…, GROQ_API_KEY_1…).";
     console.error("[generate-answers] ❌ ÉCHEC TOTAL:", msg);
     return res.status(500).json({ success: false, error: msg });
   }

@@ -1984,6 +1984,7 @@ function buildPrintHTML(
   namePos?: { x: number; y: number },
   gradeMarks?: GradeMark[],
   artTransforms?: Record<number, ArtTransform>,
+  evalFileName?: string,
 ): string {
   const fp       = profile.fingerprint;
   // 40% threshold for max fidelity in print output
@@ -2067,9 +2068,13 @@ function buildPrintHTML(
 </div>`;
   }).join("\n");
 
+  const printTitle = evalFileName
+    ? `${evalFileName} — Travaux des élèves - Evaluation électronique`
+    : `${studentName} — Travaux des élèves - Evaluation électronique`;
+
   return `<!DOCTYPE html><html lang="fr"><head>
 <meta charset="UTF-8"/>
-<title>${studentName} — nanobanana PRO</title>
+<title>${printTitle}</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Homemade+Apple&family=Marck+Script&family=Parisienne&family=Allura&family=La+Belle+Aurore&family=Bad+Script&family=Caveat:wght@400;600&family=Dancing+Script:wght@400;600&family=Sacramento&family=Satisfy&family=Great+Vibes&family=Kalam:wght@300;400;700&family=Indie+Flower&family=Shadows+Into+Light&family=Patrick+Hand&family=Nothing+You+Could+Do&display=swap">
 <style>*{margin:0;padding:0;box-sizing:border-box}html,body{background:white}@page{margin:0;size:A4 portrait}</style>
 </head><body>${pagesHTML}
@@ -2306,12 +2311,57 @@ function StudentProfileModal({
 // ─────────────────────────────────────────────────────────────────────────────
 // MAIN APP
 // ─────────────────────────────────────────────────────────────────────────────
+// ── Multi-eval slot type ───────────────────────────────────────────────────────
+interface EvalSlot {
+  evalPages: EvalPage[];
+  questions: DetectedQuestion[];
+  docLang: string;
+  evalFileName: string; // original uploaded filename (without extension)
+  answers: Record<string, string>;
+  comments: TeacherComment[];
+  offsets: Record<string, { x: number; y: number }>;
+  teacherNote: TeacherNote | null;
+  gradeMarks: GradeMark[];
+  artImages: Record<number, string>;
+  artTransforms: Record<number, ArtTransform>;
+  namePos: { x: number; y: number };
+  effects: PageEffectOverrides;
+  overlayPatches: OverlayPatch[];
+  shapes: GeometryShape[];
+}
+
+function makeEvalSlot(): EvalSlot {
+  return {
+    evalPages: [], questions: [], docLang: "fr", evalFileName: "",
+    answers: {}, comments: [], offsets: {},
+    teacherNote: null, gradeMarks: [], artImages: {}, artTransforms: {},
+    namePos: { x: 55, y: 4 }, effects: defaultEffects(),
+    overlayPatches: [], shapes: [],
+  };
+}
+
 export default function App() {
   const [step, setStep] = useState<WorkflowStep>("import");
+
+  // ── Multi-eval: 2 independent eval slots ─────────────────────────────────
+  const [evalSlots, setEvalSlots] = useState<[EvalSlot, EvalSlot]>([makeEvalSlot(), makeEvalSlot()]);
+  const [activeEvalIdx, setActiveEvalIdx] = useState<0 | 1>(0); // which eval is active
+
+  // Derived convenience accessors for the active slot
+  const activeSlot = evalSlots[activeEvalIdx];
+  const patchActiveSlot = (updater: (prev: EvalSlot) => EvalSlot) => {
+    setEvalSlots(prev => {
+      const next = [...prev] as [EvalSlot, EvalSlot];
+      next[activeEvalIdx] = updater(prev[activeEvalIdx]);
+      return next;
+    });
+  };
 
   const [evalPages, setEvalPages]       = useState<EvalPage[]>([]);
   const [isPdfLoading, setIsPdfLoading] = useState(false);
   const [usePreloaded, setUsePreloaded] = useState(false);
+  // Track uploaded eval filename (for auto print title)
+  const [evalFileName, setEvalFileName] = useState(""); // raw file name without extension
 
   // Word document (.docx) editing state
   const [wordHtml, setWordHtml]           = useState<string>("");
@@ -2353,6 +2403,25 @@ export default function App() {
   const activeBatchIdxRef = useRef(0);
   // Keep ref in sync with state
   useEffect(() => { activeBatchIdxRef.current = activeBatchIdx; }, [activeBatchIdx]);
+
+  // ── Auto-save active working state into the current eval slot ──────────────
+  // This keeps evalSlots[activeEvalIdx] in sync so switching slots restores state.
+  useEffect(() => {
+    setEvalSlots(prev => {
+      const next = [...prev] as [EvalSlot, EvalSlot];
+      next[activeEvalIdx] = {
+        evalPages, questions, docLang, evalFileName,
+        answers, comments, offsets, teacherNote,
+        gradeMarks, artImages, artTransforms,
+        namePos, effects, overlayPatches, shapes,
+      };
+      return next;
+    });
+  // Only sync when any of these values actually change
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [evalPages, questions, docLang, evalFileName, answers, comments,
+      offsets, teacherNote, gradeMarks, artImages, artTransforms,
+      namePos, effects, overlayPatches, shapes, activeEvalIdx]);
 
   const [effects, setEffects]           = useState<PageEffectOverrides>(defaultEffects());
 
@@ -2722,6 +2791,9 @@ export default function App() {
     setQuestions([]); setAnswers({}); setUsePreloaded(false);
     setComments([]); setShapes([]); setArtImages({});
     e.target.value = ""; // allow re-selecting same file
+    // Track filename (strip extension) for auto print title
+    const baseName = file.name.replace(/\.[^.]+$/, "");
+    setEvalFileName(baseName);
 
     const isWord = file.name.endsWith(".docx") || file.name.endsWith(".doc") ||
       file.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
@@ -3187,11 +3259,11 @@ export default function App() {
     pComments: TeacherComment[],
   ) => {
     const pages = evalPages.length > 0 ? evalPages : [{ base64: "", pageNum: 1 }];
-    const html = buildPrintHTML(pages, questions, pAnswers, pOffsets, pProfile, pComments, activeEffects, pProfile.name, activeArtImages, activeTeacherNote, activeNamePos, activeGradeMarks, activeArtTransforms);
+    const html = buildPrintHTML(pages, questions, pAnswers, pOffsets, pProfile, pComments, activeEffects, pProfile.name, activeArtImages, activeTeacherNote, activeNamePos, activeGradeMarks, activeArtTransforms, evalFileName);
     const w = window.open("", "_blank", "width=900,height=700");
     if (!w) { alert("Autorisez les pop-ups pour imprimer."); return; }
     w.document.open(); w.document.write(html); w.document.close();
-  }, [evalPages, questions, activeEffects, activeArtImages, activeTeacherNote, activeNamePos, activeGradeMarks, activeArtTransforms]);
+  }, [evalPages, questions, activeEffects, activeArtImages, activeTeacherNote, activeNamePos, activeGradeMarks, activeArtTransforms, evalFileName]);
 
   const printAllBatch = useCallback(() => {
     const pages = evalPages.length > 0 ? evalPages : [{ base64: "", pageNum: 1 }];
@@ -3202,15 +3274,18 @@ export default function App() {
         pages, questions, bs.answers, bs.offsets, bs.profile,
         bs.comments, bs.effects, bs.profile.name,
         bs.artImages, bs.teacherNote, bs.namePos,
-        bs.gradeMarks, bs.artTransforms,
+        bs.gradeMarks, bs.artTransforms, evalFileName,
       );
       // Extract just the <body> contents
       const bodyMatch = fullHtml.match(/<body>([\s\S]*?)<script>/);
       return bodyMatch ? bodyMatch[1].trim() : "";
     }).join("\n");
 
+    const groupTitle = evalFileName
+      ? `${evalFileName} — Travaux des élèves - Evaluation électronique`
+      : `Travaux des élèves - Evaluation électronique`;
     const html = `<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"/>
-<title>Impression groupe — nanobanana PRO</title>
+<title>${groupTitle}</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Homemade+Apple&family=Marck+Script&family=Parisienne&family=Allura&family=La+Belle+Aurore&family=Bad+Script&family=Caveat:wght@400;600&family=Dancing+Script:wght@400;600&family=Sacramento&family=Satisfy&family=Great+Vibes&family=Kalam:wght@300;400;700&family=Indie+Flower&family=Shadows+Into+Light&family=Patrick+Hand&family=Nothing+You+Could+Do&display=swap">
 <style>*{margin:0;padding:0;box-sizing:border-box}html,body{background:white}@page{margin:0;size:A4 portrait}</style>
 </head><body>${allHTML}
@@ -3219,7 +3294,7 @@ export default function App() {
     const w = window.open("", "_blank", "width=900,height=700");
     if (!w) { alert("Autorisez les pop-ups."); return; }
     w.document.open(); w.document.write(html); w.document.close();
-  }, [batchStudents, evalPages, questions]);
+  }, [batchStudents, evalPages, questions, evalFileName]);
 
   const displayPages = evalPages.length > 0 ? evalPages : [{ base64: "", pageNum: 1 }];
   const upd = <K extends keyof StudentProfile>(k: K, v: StudentProfile[K]) =>
@@ -3419,6 +3494,70 @@ export default function App() {
                 <div>
                   <h2 className="text-2xl font-black text-slate-900">Importer l'évaluation</h2>
                   <p className="text-slate-500 text-sm mt-1">PDF multipage · Word (.docx) · Image</p>
+                </div>
+
+                {/* ── Dual-Eval slot switcher ───────────────────────────── */}
+                <div className="bg-white border border-slate-200 rounded-2xl p-3 shadow-sm">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2 px-1">
+                    📄 Évaluations simultanées (2 max)
+                  </p>
+                  <div className="grid grid-cols-2 gap-2">
+                    {([0, 1] as const).map(idx => {
+                      const slot = evalSlots[idx];
+                      const isActive = activeEvalIdx === idx;
+                      const hasEval  = slot.evalPages.length > 0 || slot.questions.length > 0;
+                      return (
+                        <button key={idx}
+                          onClick={() => {
+                            setActiveEvalIdx(idx);
+                            // Restore this slot's pages/questions into active state
+                            setEvalPages(slot.evalPages);
+                            setQuestions(slot.questions);
+                            setDocLang(slot.docLang);
+                            setEvalFileName(slot.evalFileName);
+                            setAnswers(slot.answers);
+                            setComments(slot.comments);
+                            setOffsets(slot.offsets);
+                            setTeacherNote(slot.teacherNote);
+                            setGradeMarks(slot.gradeMarks);
+                            setArtImages(slot.artImages);
+                            setArtTransforms(slot.artTransforms);
+                            setNamePos(slot.namePos);
+                            setEffects(slot.effects);
+                            setOverlayPatches(slot.overlayPatches);
+                            setShapes(slot.shapes);
+                          }}
+                          className={`flex flex-col items-start p-3 rounded-xl border-2 transition-all text-left ${
+                            isActive
+                              ? "border-indigo-500 bg-indigo-50 shadow-sm"
+                              : "border-slate-200 bg-slate-50 hover:border-indigo-300"
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 w-full">
+                            <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-black ${
+                              isActive ? "bg-indigo-500 text-white" : "bg-slate-300 text-slate-600"
+                            }`}>{idx + 1}</div>
+                            <span className={`text-xs font-bold ${isActive ? "text-indigo-700" : "text-slate-600"}`}>
+                              Éval {idx + 1}
+                            </span>
+                            {hasEval && <span className="ml-auto text-[9px] font-bold text-green-600 bg-green-100 px-1.5 py-0.5 rounded-full">Chargée</span>}
+                          </div>
+                          {hasEval ? (
+                            <p className="text-[9px] text-slate-500 mt-1 truncate max-w-full">
+                              {slot.evalFileName || "Sans nom"} · {slot.questions.length} Q · {slot.evalPages.length} p.
+                            </p>
+                          ) : (
+                            <p className="text-[9px] text-slate-400 mt-1">Aucune éval chargée</p>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {evalSlots[0].evalPages.length > 0 && evalSlots[1].evalPages.length > 0 && (
+                    <p className="text-[9px] text-green-600 font-bold mt-2 px-1 flex items-center gap-1">
+                      ✅ 2 évaluations actives — chaque élève aura les deux, 100% séparées
+                    </p>
+                  )}
                 </div>
 
                 {/* Quick guide */}

@@ -1,8 +1,10 @@
 /**
  * /api/generate-comments — Generates teacher correction comments
+ * Speed: tries Groq first (1-3s, free, 14 400 req/day), falls back to Gemini.
  */
 import { GoogleGenAI, Type } from "@google/genai";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
+import https from "https";
 
 // ── Inline key rotation (Vercel cannot import from sibling api/ files) ────────
 function getGeminiKeys(): string[] {
@@ -12,6 +14,39 @@ function getGeminiKeys(): string[] {
     if (v && v !== "MY_GEMINI_API_KEY" && v.length > 10) keys.push(v);
   }
   return [...new Set(keys)];
+}
+
+function getGroqKeys(): string[] {
+  const keys: string[] = [];
+  for (const n of ["GROQ_API_KEY_1","GROQ_API_KEY_2","GROQ_API_KEY_3","GROQ_API_KEY_4","GROQ_API_KEY_5","GROQ_API_KEY"]) {
+    const v = process.env[n]; if (v && v.trim().length > 10) keys.push(v.trim());
+  }
+  return [...new Set(keys)];
+}
+
+async function groqChatComments(apiKey: string, model: string, prompt: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({
+      model, temperature: 0.5, max_tokens: 1500,
+      messages: [{ role: "user", content: prompt }],
+      response_format: { type: "json_object" },
+    });
+    const timer = setTimeout(() => reject(new Error("Groq timeout")), 18_000);
+    const req = https.request(
+      { hostname: "api.groq.com", path: "/openai/v1/chat/completions", method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}`, "Content-Length": Buffer.byteLength(body) } },
+      (res) => {
+        let data = ""; res.on("data", (c: Buffer) => { data += c.toString(); });
+        res.on("end", () => {
+          clearTimeout(timer);
+          try { const j = JSON.parse(data); if (j.error) { reject(new Error(j.error.message)); return; } resolve(j.choices?.[0]?.message?.content ?? ""); }
+          catch { reject(new Error("Groq parse error")); }
+        });
+      }
+    );
+    req.on("error", (e: Error) => { clearTimeout(timer); reject(e); });
+    req.write(body); req.end();
+  });
 }
 function isQuota(err: any): boolean {
   const msg = String(err?.message || err?.status || err || "").toLowerCase();
@@ -72,27 +107,62 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const teacherStyleMap = TEACHER_STYLE[lang_] || TEACHER_STYLE["fr"];
   const teacherStyle = teacherStyleMap[level] || teacherStyleMap["5-6"];
 
-  if (!getGeminiKeys().length) {
+  const geminiKeys = getGeminiKeys();
+  const groqKeys   = getGroqKeys();
+
+  if (!geminiKeys.length && !groqKeys.length) {
+    return res.status(200).json({ success: true, comments: buildFallbackComments(questions, answers, level, lang_), offline: true });
+  }
+
+  const qa = (questions as any[]).map((q: any) => ({
+    id: q.id, question: q.text, answer: answers[q.id] || "(pas de réponse)",
+  }));
+  const isEn = lang_ === "en";
+
+  const buildPromptText = () => isEn
+    ? `You are an English teacher marking the work of "${studentName || "the student"}". Level: ${level}/8. Style: ${teacherStyle}\n\nFor each question/answer, generate ONE short teacher comment (2-8 words max), in natural English.\nSometimes just a symbol (✓ or X or ?).\n\n` +
+      qa.map((q: any, i: number) => `Q${i+1} [${q.id}]: "${q.question}"\nAnswer: "${q.answer}"`).join("\n\n") +
+      `\n\nReturn a JSON object with a "comments" array. Each item: {id, text, position} where position is "right"|"above"|"below"|"margin".`
+    : `Tu es un professeur français qui corrige le devoir de "${studentName || "l'élève"}".\nNiveau: ${level}/8. Style: ${teacherStyle}\n\nPour chaque question/réponse, génère UN commentaire court (2-8 mots max), en français naturel d'enseignant.\nParfois juste un symbole (✓ ou X ou ?).\n\n` +
+      qa.map((q: any, i: number) => `Q${i+1} [${q.id}]: "${q.question}"\nRéponse: "${q.answer}"`).join("\n\n") +
+      `\n\nRetourne un objet JSON avec un tableau "comments". Chaque item: {id, text, position} où position est "right"|"above"|"below"|"margin".`;
+
+  // ── Pass 0: Groq (ultra-fast, 1-3s, free) ─────────────────────────────────
+  if (groqKeys.length) {
+    const GROQ_MODELS = ["llama-3.3-70b-versatile", "llama3-70b-8192", "mixtral-8x7b-32768"];
+    for (const key of groqKeys) {
+      for (const model of GROQ_MODELS) {
+        try {
+          const raw = await groqChatComments(key, model, buildPromptText());
+          if (raw && raw.length > 5) {
+            let parsed: any = {};
+            try { parsed = JSON.parse(raw.trim()); } catch { const m = raw.match(/\{[\s\S]*\}/); if (m) parsed = JSON.parse(m[0]); }
+            if (parsed?.comments?.length) {
+              const map: Record<string, { text: string; symbol?: string; position: string }> = {};
+              for (const c of parsed.comments) map[c.id] = { text: c.text, symbol: c.symbol, position: c.position || "right" };
+              console.log(`[generate-comments] ✅ Groq ${model}: ${parsed.comments.length} commentaires`);
+              return res.status(200).json({ success: true, comments: map });
+            }
+          }
+        } catch (e: unknown) {
+          const msg = ((e as Error)?.message ?? "").toLowerCase();
+          if (msg.includes("rate") || msg.includes("429") || msg.includes("quota") || msg.includes("limit")) continue;
+          console.warn("[generate-comments] Groq error:", msg.slice(0, 80));
+        }
+      }
+    }
+    console.warn("[generate-comments] Groq épuisé → fallback Gemini");
+  }
+
+  if (!geminiKeys.length) {
     return res.status(200).json({ success: true, comments: buildFallbackComments(questions, answers, level, lang_), offline: true });
   }
 
   try {
-    const qa = (questions as any[]).map((q: any) => ({
-      id: q.id, question: q.text, answer: answers[q.id] || "(pas de réponse)",
-    }));
-
-    const isEn = lang_ === "en";
     const rawText = await withKeys(async (ai) => {
-      const promptText = isEn
-        ? `You are an English teacher marking the work of "${studentName || "the student"}". Level: ${level}/8. Style: ${teacherStyle}\n\nFor each question/answer, generate ONE short teacher comment (2-8 words max), in natural English.\nSometimes just a symbol (✓ or X or ?).\n\n` +
-          qa.map((q: any, i: number) => `Q${i+1} [${q.id}]: "${q.question}"\nAnswer: "${q.answer}"`).join("\n\n") +
-          `\n\nReturn JSON with comment and position for each question.`
-        : `Tu es un professeur français qui corrige le devoir de "${studentName || "l'élève"}".\nNiveau: ${level}/8. Style: ${teacherStyle}\n\nPour chaque question/réponse, génère UN commentaire court (2-8 mots max), en français naturel d'enseignant.\nParfois juste un symbole (✓ ou X ou ?).\n\n` +
-          qa.map((q: any, i: number) => `Q${i+1} [${q.id}]: "${q.question}"\nRéponse: "${q.answer}"`).join("\n\n") +
-          `\n\nRetourne JSON avec commentaire et position pour chaque question.`;
       const response = await ai.models.generateContent({
         model: "gemini-2.5-flash",
-        contents: [{ text: promptText }],
+        contents: [{ text: buildPromptText() }],
         config: {
           responseMimeType: "application/json",
           responseSchema: {

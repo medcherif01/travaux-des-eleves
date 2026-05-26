@@ -3,10 +3,12 @@
  * Generates a context-aware teacher evaluation comment.
  * Uses page 1 image (grading grid) + student answers as context.
  * Detects language from the document and responds in the same language.
+ * Speed: tries Groq first (1-3s, free), then falls back to Gemini.
  */
 
 import { GoogleGenAI } from "@google/genai";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
+import https from "https";
 
 function getGeminiKeys(): string[] {
   const keys: string[] = [];
@@ -19,6 +21,57 @@ function getGeminiKeys(): string[] {
     if (v && v !== "MY_GEMINI_API_KEY" && v.trim().length > 10) keys.push(v.trim());
   }
   return [...new Set(keys)];
+}
+
+function getGroqKeys(): string[] {
+  const keys: string[] = [];
+  for (const n of ["GROQ_API_KEY_1","GROQ_API_KEY_2","GROQ_API_KEY_3","GROQ_API_KEY_4","GROQ_API_KEY_5","GROQ_API_KEY"]) {
+    const v = process.env[n]; if (v && v.trim().length > 10) keys.push(v.trim());
+  }
+  return [...new Set(keys)];
+}
+
+async function groqChat(apiKey: string, model: string, prompt: string, timeoutMs = 15_000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({
+      model, temperature: 0.6, max_tokens: 400,
+      messages: [{ role: "user", content: prompt }],
+    });
+    const timer = setTimeout(() => reject(new Error("Groq timeout")), timeoutMs);
+    const req = https.request(
+      { hostname: "api.groq.com", path: "/openai/v1/chat/completions", method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}`, "Content-Length": Buffer.byteLength(body) } },
+      (res) => {
+        let data = ""; res.on("data", (c: Buffer) => { data += c.toString(); });
+        res.on("end", () => {
+          clearTimeout(timer);
+          try { const j = JSON.parse(data); resolve(j.choices?.[0]?.message?.content ?? ""); }
+          catch { reject(new Error("Groq parse error")); }
+        });
+      }
+    );
+    req.on("error", (e: Error) => { clearTimeout(timer); reject(e); });
+    req.write(body); req.end();
+  });
+}
+
+async function tryGroqTeacherNote(prompt: string): Promise<string | null> {
+  const keys = getGroqKeys();
+  if (!keys.length) return null;
+  const MODELS = ["llama-3.3-70b-versatile", "llama3-70b-8192", "mixtral-8x7b-32768"];
+  for (const key of keys) {
+    for (const model of MODELS) {
+      try {
+        const text = (await groqChat(key, model, prompt, 14_000)).trim();
+        if (text && text.length > 20) { console.log(`[teacher-note] ✅ Groq ${model}`); return text; }
+      } catch (e: unknown) {
+        const msg = ((e as Error)?.message ?? "").toLowerCase();
+        if (msg.includes("rate") || msg.includes("429") || msg.includes("quota")) continue;
+        console.warn("[teacher-note] Groq error:", msg.slice(0, 80));
+      }
+    }
+  }
+  return null;
 }
 
 function isRetryable(err: unknown): boolean {
@@ -129,13 +182,35 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
   parts.push({ text: prompt });
 
+  const geminiKeys = getGeminiKeys();
+  const groqKeys   = getGroqKeys();
+
   // Demo mode (no keys)
-  const keys = getGeminiKeys();
-  if (!keys.length) {
+  if (!geminiKeys.length && !groqKeys.length) {
     const demo = lang_ === "en"
       ? `${name} demonstrates a ${levelLabel} level of understanding. Their answers show good effort and engagement with the material. Keep up the good work!`
       : `${name} démontre un niveau ${levelLabel} de compréhension. Ses réponses témoignent d'un bon effort et d'une bonne implication. Continuez ainsi !`;
     return res.status(200).json({ success: true, text: demo, isDemo: true });
+  }
+
+  const clean = (t: string) => t.replace(/^#{1,3}\s*/gm, "").replace(/\*\*/g, "").replace(/\*/g, "").trim();
+
+  // ── Pass 0: Groq (1-3s, free, text-only) — skip if page1 image needed ─────
+  // Use Groq when no image context is available (faster)
+  if (groqKeys.length && !page1Base64) {
+    try {
+      const groqText = await tryGroqTeacherNote(prompt);
+      if (groqText && groqText.length >= 15) {
+        return res.status(200).json({ success: true, text: clean(groqText) });
+      }
+    } catch (e) {
+      console.warn("[teacher-note] Groq failed, falling back to Gemini");
+    }
+  }
+
+  // ── Gemini fallback (supports image context) ────────────────────────────────
+  if (!geminiKeys.length) {
+    return res.status(500).json({ success: false, error: "No API keys available." });
   }
 
   try {
@@ -149,18 +224,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
 
     if (!text || text.length < 10) {
-      return res.status(500).json({ success: false, error: "Gemini returned empty comment." });
+      return res.status(500).json({ success: false, error: "Empty response from AI." });
     }
 
-    // Strip any accidental markdown
-    const clean = text.replace(/^#{1,3}\s*/gm, "").replace(/\*\*/g, "").replace(/\*/g, "").trim();
-    return res.status(200).json({ success: true, text: clean });
+    return res.status(200).json({ success: true, text: clean(text) });
 
   } catch (err: unknown) {
     console.error("[generate-teacher-note] Error:", (err as Record<string,unknown>)?.message ?? err);
     return res.status(500).json({
       success: false,
-      error: `Gemini error: ${(err as Record<string,unknown>)?.message ?? String(err)}`,
+      error: `AI error: ${(err as Record<string,unknown>)?.message ?? String(err)}`,
     });
   }
 }
