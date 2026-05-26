@@ -2347,16 +2347,6 @@ export default function App() {
   const [evalSlots, setEvalSlots] = useState<[EvalSlot, EvalSlot]>([makeEvalSlot(), makeEvalSlot()]);
   const [activeEvalIdx, setActiveEvalIdx] = useState<0 | 1>(0); // which eval is active
 
-  // Derived convenience accessors for the active slot
-  const activeSlot = evalSlots[activeEvalIdx];
-  const patchActiveSlot = (updater: (prev: EvalSlot) => EvalSlot) => {
-    setEvalSlots(prev => {
-      const next = [...prev] as [EvalSlot, EvalSlot];
-      next[activeEvalIdx] = updater(prev[activeEvalIdx]);
-      return next;
-    });
-  };
-
   const [evalPages, setEvalPages]       = useState<EvalPage[]>([]);
   const [isPdfLoading, setIsPdfLoading] = useState(false);
   const [usePreloaded, setUsePreloaded] = useState(false);
@@ -2404,25 +2394,6 @@ export default function App() {
   // Keep ref in sync with state
   useEffect(() => { activeBatchIdxRef.current = activeBatchIdx; }, [activeBatchIdx]);
 
-  // ── Auto-save active working state into the current eval slot ──────────────
-  // This keeps evalSlots[activeEvalIdx] in sync so switching slots restores state.
-  useEffect(() => {
-    setEvalSlots(prev => {
-      const next = [...prev] as [EvalSlot, EvalSlot];
-      next[activeEvalIdx] = {
-        evalPages, questions, docLang, evalFileName,
-        answers, comments, offsets, teacherNote,
-        gradeMarks, artImages, artTransforms,
-        namePos, effects, overlayPatches, shapes,
-      };
-      return next;
-    });
-  // Only sync when any of these values actually change
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [evalPages, questions, docLang, evalFileName, answers, comments,
-      offsets, teacherNote, gradeMarks, artImages, artTransforms,
-      namePos, effects, overlayPatches, shapes, activeEvalIdx]);
-
   const [effects, setEffects]           = useState<PageEffectOverrides>(defaultEffects());
 
   const [comments, setComments]           = useState<TeacherComment[]>([]);
@@ -2455,6 +2426,25 @@ export default function App() {
   // Draggable blanco / rature overlay patches (non-batch mode)
   const [overlayPatches, setOverlayPatches] = useState<OverlayPatch[]>([]);
   const [selectedOverlayId, setSelectedOverlayId] = useState<string | null>(null);
+
+  // ── Auto-save active working state into the current eval slot ──────────────
+  // Placed HERE so all state vars above are already initialized (no TDZ).
+  // This keeps evalSlots[activeEvalIdx] in sync so switching slots restores state.
+  useEffect(() => {
+    setEvalSlots(prev => {
+      const next = [...prev] as [EvalSlot, EvalSlot];
+      next[activeEvalIdx] = {
+        evalPages, questions, docLang, evalFileName,
+        answers, comments, offsets, teacherNote,
+        gradeMarks, artImages, artTransforms,
+        namePos, effects, overlayPatches, shapes,
+      };
+      return next;
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [evalPages, questions, docLang, evalFileName, answers, comments,
+      offsets, teacherNote, gradeMarks, artImages, artTransforms,
+      namePos, effects, overlayPatches, shapes, activeEvalIdx]);
 
   // ─────────────────────────────────────────────────────────────────────────
   // ACTIVE STUDENT — computed first so callbacks below can read stable values
