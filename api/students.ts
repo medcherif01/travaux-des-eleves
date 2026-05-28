@@ -1,34 +1,43 @@
 import mongoose from "mongoose";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 
-// ── Inline MongoDB setup ─────────────────────────────────────────────────────
+// ── Student Schema with section + classe ─────────────────────────────────────
 const StudentSchema = new mongoose.Schema(
   {
-    name: { type: String, required: true, unique: true, trim: true },
-    fontKey: { type: String, default: "homemade-apple" },
-    inkColor: { type: String, default: "#1d3278" },
-    fontSize: { type: Number, default: 18 },
-    rotationAngle: { type: Number, default: -0.5 },
-    skewAngle: { type: Number, default: -3 },
-    wordDrift: { type: Number, default: 1.5 },
-    letterSpacing: { type: Number, default: -0.5 },
-    messinessIntensity: { type: Number, default: 2.5 },
-    enableUnreadableLetters: { type: Boolean, default: true },
-    letterCaseChaos: { type: Boolean, default: true },
-    inkDrySkipping: { type: Boolean, default: true },
-    penThickness: { type: Number, default: 1.5 },
-    penType: { type: String, default: "ballpoint" },
-    pencilHardness: { type: String, default: "HB" },
-    hwImageBase64: { type: String, default: "" },
-    hwImageName: { type: String, default: "" },
-    analysisDescription: { type: String, default: "" },
-    confidenceScore: { type: Number, default: 0 },
+    name:      { type: String, required: true, trim: true },
+    section:   { type: String, enum: ["garcons", "filles"], required: true, default: "garcons" },
+    classe:    { type: String, enum: ["PEI1","PEI2","PEI3","PEI4","PEI5"], required: true, default: "PEI1" },
+    // Handwriting settings
+    fontKey:               { type: String,  default: "kalam" },
+    inkColor:              { type: String,  default: "#1a3aab" },
+    fontSize:              { type: Number,  default: 18 },
+    writingSize:           { type: String,  enum: ["small","medium","large"], default: "medium" },
+    writingStyle:          { type: String,  enum: ["clean","medium","childlike","fast","realistic"], default: "medium" },
+    rotationAngle:         { type: Number,  default: -0.5 },
+    skewAngle:             { type: Number,  default: -3 },
+    wordDrift:             { type: Number,  default: 1.5 },
+    letterSpacing:         { type: Number,  default: -0.5 },
+    messinessIntensity:    { type: Number,  default: 2.5 },
+    enableUnreadableLetters:{ type: Boolean, default: true },
+    letterCaseChaos:       { type: Boolean, default: false },
+    inkDrySkipping:        { type: Boolean, default: true },
+    penThickness:          { type: Number,  default: 1.5 },
+    penType:               { type: String,  default: "ballpoint" },
+    hwImageBase64:         { type: String,  default: "" },
+    hwImageName:           { type: String,  default: "" },
+    analysisDescription:   { type: String,  default: "" },
+    confidenceScore:       { type: Number,  default: 0 },
   },
   { timestamps: true }
 );
 
+// compound index: a student is unique per section+classe+name
+StudentSchema.index({ section: 1, classe: 1, name: 1 }, { unique: true });
+
 function getStudentModel() {
-  return mongoose.models.Student || mongoose.model("Student", StudentSchema);
+  // drop old model if schema changed (dev hot-reload)
+  if (mongoose.models.Student) return mongoose.models.Student;
+  return mongoose.model("Student", StudentSchema);
 }
 
 async function connectDB(): Promise<boolean> {
@@ -46,18 +55,21 @@ async function connectDB(): Promise<boolean> {
 // ── Handler ──────────────────────────────────────────────────────────────────
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
 
   const dbOk = await connectDB();
   const Student = getStudentModel();
 
-  // GET — list all students
+  // GET — list students, optionally filtered by section + classe
   if (req.method === "GET") {
     if (!dbOk) return res.status(200).json({ success: true, students: [], offline: true });
     try {
-      const students = await Student.find({}).sort({ updatedAt: -1 }).lean();
+      const filter: Record<string, string> = {};
+      if (req.query.section) filter.section = req.query.section as string;
+      if (req.query.classe)  filter.classe  = req.query.classe  as string;
+      const students = await Student.find(filter).sort({ name: 1 }).lean();
       return res.status(200).json({ success: true, students });
     } catch (err: any) {
       return res.status(500).json({ success: false, error: err.message });
@@ -67,12 +79,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // POST — create or update student
   if (req.method === "POST") {
     const data = req.body || {};
-    if (!data.name?.trim()) return res.status(400).json({ success: false, error: "Nom manquant." });
+    if (!data.name?.trim())    return res.status(400).json({ success: false, error: "Nom manquant." });
+    if (!data.section)         return res.status(400).json({ success: false, error: "Section manquante." });
+    if (!data.classe)          return res.status(400).json({ success: false, error: "Classe manquante." });
     if (!dbOk) return res.status(200).json({ success: true, student: data, offline: true });
     try {
       const student = await Student.findOneAndUpdate(
-        { name: data.name.trim() },
-        { ...data, name: data.name.trim(), hwImageBase64: data.hwImage || data.hwImageBase64 || "" },
+        { name: data.name.trim(), section: data.section, classe: data.classe },
+        { ...data, name: data.name.trim() },
         { upsert: true, new: true, runValidators: false }
       ).lean();
       return res.status(200).json({ success: true, student });
@@ -81,13 +95,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
   }
 
-  // DELETE — delete by name (query param)
+  // DELETE — delete by section + classe + name
   if (req.method === "DELETE") {
-    const name = (req.query.name as string) || "";
-    if (!name) return res.status(400).json({ success: false, error: "Nom manquant." });
+    const name    = decodeURIComponent((req.query.name    as string) || "");
+    const section = (req.query.section as string) || "";
+    const classe  = (req.query.classe  as string) || "";
+    if (!name || !section || !classe) return res.status(400).json({ success: false, error: "Paramètres manquants." });
     if (!dbOk) return res.status(200).json({ success: true, offline: true });
     try {
-      await Student.deleteOne({ name: decodeURIComponent(name) });
+      await Student.deleteOne({ name, section, classe });
       return res.status(200).json({ success: true });
     } catch (err: any) {
       return res.status(500).json({ success: false, error: err.message });
